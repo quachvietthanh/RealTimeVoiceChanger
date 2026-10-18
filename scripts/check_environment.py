@@ -10,17 +10,33 @@ import platform
 import shutil
 import subprocess
 import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def check_python_environment() -> None:
     print("=" * 60)
     print("Python & System Environment Report")
     print("=" * 60)
+    os_name = platform.system()
+    os_rel = platform.release()
+    try:
+        build = int(platform.version().split(".")[-1])
+        if os_name == "Windows" and build >= 22000:
+            os_rel = f"11 (Build {build})"
+    except (ValueError, IndexError):
+        pass
+
     print(f"Python Version    : {sys.version.split()[0]}")
     print(f"Python Executable : {sys.executable}")
-    print(f"Platform          : {platform.platform()}")
+    print(f"OS Platform       : {os_name} {os_rel}")
+    print(f"Platform String   : {platform.platform()}")
     print(f"Machine / Arch    : {platform.machine()}")
     print(f"Processor         : {platform.processor()}")
+
 
 
 def check_gpu_environment() -> None:
@@ -60,10 +76,28 @@ def check_installed_audio_and_ml_packages() -> None:
             print(f"  - {pkg:<15}: Not installed (deferred to Phase 1)")
 
 
+def check_applio_patch() -> None:
+    print("\n" + "=" * 60)
+    print("Applio Core v3.2.8 Streaming Optimization Patch Check")
+    print("=" * 60)
+    try:
+        from scripts.setup_applio_patch import check_patch_status
+        status = check_patch_status()
+        if status == 0:
+            print("  - Streaming Patch : Applied and verified")
+        elif status == 1:
+            print("  - Streaming Patch : NOT APPLIED (Run: python scripts/setup_applio_patch.py --apply)")
+        else:
+            print("  - Streaming Patch : Applio directory not found")
+    except Exception as err:
+        print(f"  - Error checking patch status: {err}")
+
+
 def main() -> None:
     check_python_environment()
     check_gpu_environment()
     check_installed_audio_and_ml_packages()
+    check_applio_patch()
     print("\nEnvironment check complete.")
 
 

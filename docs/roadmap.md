@@ -14,7 +14,8 @@ graph TD
 
 ---
 
-### Milestone 1: Environment and Hardware Assessment
+## Milestone 1: Environment and Hardware Assessment
+
 - **Objective:** Evaluate local Windows hardware, audio subsystems, and identify a compatible RVC inference runtime without breaking local environments.
 - **Key Tasks:**
   - Audit Python version, Windows platform architecture, and available GPU/CUDA compute capabilities.
@@ -24,7 +25,8 @@ graph TD
 
 ---
 
-### Milestone 2: Offline WAV Conversion and Model-Quality Evaluation
+## Milestone 2: Offline WAV Conversion and Model-Quality Evaluation
+
 - **Objective:** Verify voice transformation quality on static audio files before introducing real-time streaming complexity.
 - **Key Tasks:**
   - Acquire small, approved clean voice test samples (male speech).
@@ -35,7 +37,8 @@ graph TD
 
 ---
 
-### Milestone 3: Microphone and Virtual-Cable Passthrough (Without AI)
+## Milestone 3: Microphone and Virtual-Cable Passthrough (Without AI)
+
 - **Objective:** Validate the audio I/O streaming foundation and routing to VB-Audio Virtual Cable with zero AI inference.
 - **Key Tasks:**
   - Implement `audio/devices.py` to enumerate microphones and virtual cable inputs.
@@ -46,7 +49,8 @@ graph TD
 
 ---
 
-### Milestone 4: Real-Time RVC Integration
+## Milestone 4: Real-Time RVC Integration
+
 - **Objective:** Connect the chunked real-time audio pipeline to the RVC conversion adapter.
 - **Key Tasks:**
   - Implement real-time ring buffering, chunk windowing, and overlap-add crossfading.
@@ -56,7 +60,8 @@ graph TD
 
 ---
 
-### Milestone 5: Feminine Voice Quality Tuning
+## Milestone 5: Feminine Voice Quality Tuning
+
 - **Objective:** Optimize male-to-female voice transformation parameters for maximum naturalness.
 - **Key Tasks:**
   - Calibrate pitch shift (+12 semitones baseline, fine-tuned per vocal range).
@@ -68,7 +73,8 @@ graph TD
 
 ---
 
-### Milestone 6: Latency and Stability Optimization
+## Milestone 6: Latency and Stability Optimization
+
 - **Objective:** Minimize end-to-end turnaround latency while maintaining robust streaming stability.
 - **Key Tasks:**
   - Profile end-to-end latency: input capture + buffer slicing + inference + overlap blending + output buffer.
@@ -79,7 +85,8 @@ graph TD
 
 ---
 
-### Milestone 7: Minimal GUI and Packaging
+## Milestone 7: Minimal GUI and Packaging
+
 - **Objective:** Provide a lightweight, user-friendly interface for device selection and preset tuning.
 - **Key Tasks:**
   - Build a clean desktop interface for selecting audio devices, loading models, and adjusting pitch/volume.

@@ -34,3 +34,13 @@ voice-changer = "voice_changer.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pyright]
+include = ["src", "scripts", "tests"]
+exclude = ["third_party"]
+venvPath = "."
+venv = ".venv"
+extraPaths = [
+    "src",
+    "third_party/applio"
+]
