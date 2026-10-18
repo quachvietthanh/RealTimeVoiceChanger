@@ -7,18 +7,18 @@ from any concrete voice-conversion backend (RVC or future models).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Protocol, runtime_checkable
+from typing import Any, Optional, Protocol, runtime_checkable
 
 
 @dataclass
 class ConversionConfig:
     """Parameters governing voice conversion."""
 
-    pitch_shift: float = 12.0  # Semitones (+12 for typical male-to-female shift)
-    f0_method: str = "rmvpe"   # Pitch extraction algorithm
-    index_rate: float = 0.75   # Feature retrieval blending ratio
-    filter_radius: int = 3     # Median filter radius for pitch
-    protect_rate: float = 0.33 # Consonant and breath protection factor
+    pitch_shift: float = 12.0
+    f0_method: str = "rmvpe"
+    index_rate: float = 0.75
+    filter_radius: int = 3
+    protect_rate: float = 0.33
 
 
 @runtime_checkable
@@ -35,6 +35,16 @@ class VoiceConverter(Protocol):
 
     def convert(self, audio_chunk: bytes, config: ConversionConfig) -> bytes:
         """Process an audio chunk and return the converted audio bytes."""
+        ...
+
+    def convert_chunk(
+        self,
+        audio_data: Any,
+        config: Optional[ConversionConfig] = None,
+        input_sr: int = 40000,
+        target_sr: Optional[int] = None,
+    ) -> Any:
+        """Process an in-memory audio chunk (float32 array)."""
         ...
 
     def reset(self) -> None:

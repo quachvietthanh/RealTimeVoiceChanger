@@ -15,7 +15,6 @@ def list_devices() -> None:
     print("Audio Device Discovery")
     print("=" * 60)
 
-    # Check if sounddevice or pyaudio is installed
     try:
         import sounddevice as sd  # type: ignore
 
@@ -32,8 +31,8 @@ def list_devices() -> None:
         print("Querying via 'pyaudio' library:\n")
         p = pyaudio.PyAudio()
         info = p.get_host_api_info_by_index(0)
-        numdevices = info.get("deviceCount", 0)
-        for i in range(0, numdevices):
+        numdevices = int(info.get("deviceCount", 0))
+        for i in range(numdevices):
             device_info = p.get_device_info_by_host_api_device_index(0, i)
             max_in = device_info.get("maxInputChannels", 0)
             max_out = device_info.get("maxOutputChannels", 0)

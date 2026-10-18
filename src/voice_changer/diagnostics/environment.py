@@ -14,15 +14,26 @@ from typing import Dict
 
 def get_system_info() -> Dict[str, str]:
     """Gather core operating system and Python environment details."""
+    os_name = platform.system()
+    os_release = platform.release()
+    try:
+        # Windows 11 builds start from 22000
+        build = int(platform.version().split(".")[-1])
+        if os_name == "Windows" and build >= 22000:
+            os_release = "11"
+    except (ValueError, IndexError):
+        pass
+
     return {
-        "os": platform.system(),
+        "os": os_name,
         "os_version": platform.version(),
-        "os_release": platform.release(),
+        "os_release": os_release,
         "python_version": sys.version.split()[0],
         "python_executable": sys.executable,
         "machine": platform.machine(),
         "processor": platform.processor(),
     }
+
 
 
 def get_gpu_info() -> Dict[str, str]:

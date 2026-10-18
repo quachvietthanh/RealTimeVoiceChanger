@@ -20,6 +20,8 @@ build/
 dist/
 *.egg-info/
 .eggs/
+third_party/
+
 
 # IDE and Editor configurations
 .vscode/
@@ -36,12 +38,17 @@ runs/
 benchmarks/
 
 # Audio data and private recordings
-# NOTE: Do NOT blanket-ignore all .wav files so small test fixtures in tests/ are preserved.
 recordings/
 temp_audio/
 *.raw
 *.pcm
 private_audio/
+data/
+tests/fixtures/*.wav
+tests/fixtures/*.mp3
+tests/fixtures/*.flac
+tests/fixtures/*.ogg
+tests/fixtures/*.m4a
 
 # Machine learning model weights, checkpoints, and index files
 *.pth
