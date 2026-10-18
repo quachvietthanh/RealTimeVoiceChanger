@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "realtime-voice-changer"
+version = "0.1.0"
+description = "A real-time male-to-female voice changer for Windows using RVC"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Project Maintainers" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence"
+]
+
+# Runtime dependencies are intentionally deferred until the environment assessment
+# phase (hardware, CUDA capabilities, audio backend, and compatible RVC inference engine)
+# is completed. See docs/roadmap.md (Phase 1).
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0"
+]
+
+[project.scripts]
+voice-changer = "voice_changer.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

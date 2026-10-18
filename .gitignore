@@ -1,0 +1,64 @@
+# Python byte code and cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Distribution and packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# IDE and Editor configurations
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs and runtime outputs
+*.log
+logs/
+output/
+runs/
+benchmarks/
+
+# Audio data and private recordings
+# NOTE: Do NOT blanket-ignore all .wav files so small test fixtures in tests/ are preserved.
+recordings/
+temp_audio/
+*.raw
+*.pcm
+private_audio/
+
+# Machine learning model weights, checkpoints, and index files
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.bin
+*.index
+models/weights/*
+!models/weights/.gitkeep
+models/checkpoints/*
+!models/checkpoints/.gitkeep
+models/indices/*
+!models/indices/.gitkeep
+
+# Local configurations, secrets, and environment variables
+.env
+.env.*
+config/*.local.json
+config/*.local.yaml
