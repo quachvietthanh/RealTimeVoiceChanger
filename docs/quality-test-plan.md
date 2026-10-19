@@ -2,7 +2,7 @@
 
 This document defines the evaluation criteria, test protocols, and metrics for validating RealTimeVoiceChanger in future development stages.
 
-> **Status Notice:** No tests have passed yet. The criteria below are specifications for future validation once the respective components and models are implemented.
+> **Status Notice:** Milestone 2 (Offline WAV conversion) and Milestone 3A.1 (5-minute real-time streaming validation) have executed and passed successfully. Recorded test results are logged below.
 
 ---
 
@@ -60,8 +60,6 @@ Future testing will assess the voice conversion across five critical dimensions:
 
 ## 3. Test Recording & Reporting Template
 
-Future test runs must record results according to this format:
-
 ```text
 Run ID:               [e.g., 2026-XX-XX-RUN01]
 Model:                [Model Name / Epoch / Sample Rate]
@@ -73,4 +71,52 @@ Total Latency:        [TBD ms]
 Underruns/Hour:       [TBD]
 Quality Notes:        [Subjective listening feedback and artifact observations]
 Result:               [PENDING / PASS / FAIL]
+```
+
+---
+
+## 4. Empirical Test Logs
+
+### Run M2-OFFLINE-01 (Milestone 2 Offline Baseline)
+
+```text
+Run ID:               M2-OFFLINE-01
+Timestamp:            2026-10-19
+Model:                vctk_female_p231 (v2, 40kHz, HiFi-GAN)
+F0 Algorithm:         RMVPE
+Pitch Transposition:  +10.0 semitones
+Input Audio:          tests/fixtures/input_male.wav (32.23s, 48kHz, 2ch)
+Inference Time Total: 11.108 s
+Real-Time Factor:     0.345 (Faster than real-time)
+Output Audio:         output/offline_test_result.wav (32.20s, 40kHz, 1ch)
+Clipping / Silence:   False / False (Peak: 0.80078, RMS: 0.10037)
+Result:               PASS
+```
+
+### Run M3A1-LONG-01 (Milestone 3A.1 5-Minute Streaming Regression)
+
+```text
+Run ID:               M3A1-LONG-01
+Timestamp:            2026-10-19
+Model:                vctk_female_p231 (v2, 40kHz, HiFi-GAN, Faiss RAM cached)
+F0 Algorithm:         RMVPE
+Pitch Transposition:  +10.0 semitones
+Index Rate:           0.75
+Chunk Size:           500.0 ms (20,000 samples @ 40 kHz)
+Session Duration:     301.0 s
+Chunks Processed:     600 / 600 (100.0% completion)
+Inference Errors:     0
+Backlog Drops:        0
+Input Overflows:      0
+Sample Mismatches:    0 (Expected: 20,000, Actual: 20,000)
+Steady-State Drops:   0 (Active speech buffer glitches)
+Startup Silence:      21 callbacks (Expected initial priming delay ~1.0s)
+Inference Time/Chunk: Mean: 280.8 ms | Median: 277.7 ms | Min: 249.7 ms | Max: 461.4 ms | P95: 340.4 ms
+Real-Time Factor:     0.562 (280.8 ms / 500.0 ms)
+Queue Wait Delay:     Median: 0.18 ms | P95: 0.27 ms
+Software E2E Latency: Median: 778.7 ms | P95: 841.1 ms
+Buffer Occupancy:     Peak: 838.3 ms | Ahead in Queue: ~338.3 ms
+Estimated Acoustic:   ~1117.0 ms (Software E2E Median + Ahead in Queue; excl. hardware DAC/driver)
+GPU Memory:           Start: 436.4 MB | Peak: 473.5 MB | End: 444.5 MB (Stable, no leaks)
+Result:               PASS
 ```

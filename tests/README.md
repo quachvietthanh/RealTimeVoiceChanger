@@ -25,3 +25,13 @@ tests/
 3. **Audio Fixture Safety**:
    - Only small, non-private, synthetic, or public domain speech test samples may be committed to `tests/fixtures/`.
    - Never commit personal voice recordings or sensitive audio files.
+
+## Running Tests
+
+```powershell
+# Run all unit tests
+python -m unittest discover -s tests
+
+# Run offline conversion regression test
+python scripts/offline_conversion_test.py
+```

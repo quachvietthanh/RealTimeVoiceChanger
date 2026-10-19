@@ -23,7 +23,7 @@ models/
    - Ensure it corresponds to the exact model checkpoint being loaded.
 
 3. **Pitch Predictor / Feature Extractor Weights:**
-   - Any auxiliary models (such as `rmvpe.pt` for pitch extraction or `hubert_base.pt` for content features) should be placed in `models/checkpoints/` as required by the chosen inference implementation.
+   - Auxiliary models (`rmvpe.pt` for RMVPE pitch extraction and `contentvec/pytorch_model.bin` + `config.json` for HuggingFace ContentVec features) should be placed in `models/checkpoints/` (or downloaded automatically using `python scripts/download_auxiliary_assets.py`).
 
 ## Strict Git Policy
 
