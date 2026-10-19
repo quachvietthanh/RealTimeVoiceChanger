@@ -34,6 +34,9 @@ class PipelineMetrics:
     steady_underflow_count: int = 0
     shutdown_underflow_count: int = 0
     inference_errors: int = 0
+    sample_count_mismatches: int = 0
+    expected_chunk_samples: int = 0
+    last_converted_chunk_samples: int = 0
 
     inference_times_ms: list[float] = field(default_factory=list)
     queue_wait_times_ms: list[float] = field(default_factory=list)
@@ -112,6 +115,9 @@ class PipelineMetrics:
             "steady_underflows": self.steady_underflow_count,
             "shutdown_underflows": self.shutdown_underflow_count,
             "inference_errors": self.inference_errors,
+            "expected_chunk_samples": self.expected_chunk_samples,
+            "last_converted_chunk_samples": self.last_converted_chunk_samples,
+            "sample_count_mismatches": self.sample_count_mismatches,
             "avg_inference_ms": round(self.avg_inference_ms, 1),
             "median_inference_ms": round(self.median_inference_ms, 1),
             "min_inference_ms": round(self.min_inference_ms, 1),
@@ -258,6 +264,12 @@ class RealTimeVoiceChangerPipeline:
                 infer_duration_ms = (time.perf_counter() - t0) * 1000.0
                 self.metrics.inference_times_ms.append(infer_duration_ms)
                 self.metrics.total_chunks_converted += 1
+
+                if self.chunk_samples > 0:
+                    self.metrics.expected_chunk_samples = self.chunk_samples
+                    self.metrics.last_converted_chunk_samples = len(converted)
+                    if len(converted) != self.chunk_samples:
+                        self.metrics.sample_count_mismatches += 1
 
                 self.output_stream.write_chunk(converted)
                 t_written = time.perf_counter()

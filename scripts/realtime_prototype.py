@@ -7,6 +7,7 @@ asynchronous bounded-queue neural inference on Quadro T2000 GPU, and continuous 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import threading
 import time
@@ -48,6 +49,7 @@ def main() -> None:
     parser.add_argument("--index-path", type=str, default="models/indices/vctk_female_p231.index", help="Path to Faiss .index")
     parser.add_argument("--simulated-input", type=str, default=None, help="Optional WAV file to stream in real-time as simulated mic")
     parser.add_argument("--prebuffer", type=float, default=0.15, help="Startup prebuffer duration in seconds (default: 0.15s)")
+    parser.add_argument("--json-output", type=str, default=None, help="Optional path to write structured test results JSON")
     args = parser.parse_args()
 
     device_mgr = AudioDeviceManager()
@@ -125,6 +127,10 @@ def main() -> None:
     print("      Warmup complete.")
 
     print(f"\n[3/3] Running prototype session for {args.duration:.1f} seconds...")
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+    gpu_vram_start = get_gpu_memory_mb()
+
     t_wall_start = time.perf_counter()
     t_cpu_start = time.process_time()
 
@@ -151,14 +157,24 @@ def main() -> None:
         while time.perf_counter() - start_t < args.duration:
             idx_in_file = c_idx % chunks_in_file
             chunk_slice = sim_data[idx_in_file * chunk_samples : (idx_in_file + 1) * chunk_samples]
-            pipeline.metrics.total_chunks_captured += 1
-            pipeline._input_queue.put(chunk_slice)
-            c_idx += 1
 
-            target_time = start_t + c_idx * args.chunk_size
+            t_first = start_t + c_idx * args.chunk_size
+            target_time = start_t + (c_idx + 1) * args.chunk_size
             sleep_remaining = target_time - time.perf_counter()
             if sleep_remaining > 0:
                 time.sleep(sleep_remaining)
+            t_ready = time.perf_counter()
+
+            pipeline.metrics.total_chunks_captured += 1
+            pipeline._input_queue.put((chunk_slice, t_first, t_ready))
+            c_idx += 1
+
+            if c_idx > 0 and c_idx % 30 == 0:
+                elapsed_now = time.perf_counter() - start_t
+                buffered_ms = pipeline.output_stream.buffered_seconds * 1000.0
+                conv = pipeline.metrics.total_chunks_converted
+                drops = pipeline.output_stream.steady_underflow_count
+                print(f"      [Progress] {elapsed_now:5.1f}s / {args.duration:.1f}s | In: {c_idx:4d} | Out: {conv:4d} | Buffer: {buffered_ms:5.1f} ms | Steady Drops: {drops}")
 
         pipeline.output_stream.prepare_shutdown()
         time.sleep(args.chunk_size * 1.2)
@@ -178,7 +194,15 @@ def main() -> None:
     total_wall = max(t_wall_end - t_wall_start, 1e-6)
     total_cpu = max(t_cpu_end - t_cpu_start, 0.0)
     avg_cpu = (total_cpu / total_wall) * 100.0
+
+    gpu_vram_end = get_gpu_memory_mb()
+    gpu_vram_peak = float(torch.cuda.max_memory_allocated() / (1024 * 1024)) if torch.cuda.is_available() else gpu_vram_end
+
     summary = pipeline.metrics.summary()
+
+    chunk_dur_ms = args.chunk_size * 1000.0
+    buffer_ahead_ms = max(0.0, summary["avg_buffer_occupancy_ms"] - chunk_dur_ms)
+    estimated_acoustic_lat = round(summary["median_software_e2e_ms"] + buffer_ahead_ms, 1)
 
     print("\n" + "=" * 70)
     print("PROTOTYPE EXECUTION RESULTS & TELEMETRY")
@@ -195,21 +219,59 @@ def main() -> None:
         print(f"  - Steady Timestamps   : {[round(t - t_wall_start, 3) for t in pipeline.output_stream.steady_underflow_timestamps]}")
     print(f"  - Shutdown Drain      : {summary['shutdown_underflows']} (trailing silence after session)")
     print(f"Inference Errors        : {summary['inference_errors']}")
+    print(f"Sample Count Mismatches : {summary.get('sample_count_mismatches', 0)}")
+    print(f"Chunk Sample Counts     : Expected={summary.get('expected_chunk_samples', 0)}, Last Converted={summary.get('last_converted_chunk_samples', 0)}")
+    print(f"Chunk Duration          : {chunk_dur_ms:.1f} ms")
     print(f"Inference Latency (Avg) : {summary['avg_inference_ms']} ms")
-    print(f"Inference Latency (Med) : {summary['median_inference_ms']} ms")
-    print(f"Inference Latency (Min) : {summary['min_inference_ms']} ms")
-    print(f"Inference Latency (Max) : {summary['max_inference_ms']} ms")
+    print(f"Inference Latency (Med) : {summary['median_inference_ms']} ms (Min: {summary['min_inference_ms']} ms, Max: {summary['max_inference_ms']} ms)")
     print(f"Inference Latency (P95) : {summary['p95_inference_ms']} ms")
-    print(f"Real-Time Factor (RTF)  : {summary['avg_inference_ms'] / (args.chunk_size * 1000):.3f}")
+    print(f"Real-Time Factor (RTF)  : {summary['avg_inference_ms'] / chunk_dur_ms:.3f}")
     print(f"Queue Wait Delay (Med)  : {summary['median_queue_wait_ms']} ms (P95: {summary['p95_queue_wait_ms']} ms)")
-    print(f"Initial Speech Onset    : {summary['speech_onset_latency_ms']} ms (Capture + 1st Infer)")
-    print(f"Measured Softw. E2E Med : {summary['median_software_e2e_ms']} ms (First sample -> Output written)")
+    print(f"Initial Speech Onset    : {summary['speech_onset_latency_ms']} ms (First spoken sample -> 1st chunk in buffer)")
+    print(f"Measured Softw. E2E Med : {summary['median_software_e2e_ms']} ms (First sample captured -> Output written)")
     print(f"Measured Softw. E2E P95 : {summary['p95_software_e2e_ms']} ms")
-    print(f"Avg Output Ring Buffer  : {summary['avg_buffer_occupancy_ms']} ms")
-    print(f"Estimated Total E2E Lat : ~{round(summary['median_software_e2e_ms'] + summary['avg_buffer_occupancy_ms'], 1)} ms (Software E2E + RingBuffer; excl. OS/DAC hardware)")
-    print(f"GPU VRAM Allocated      : {get_gpu_memory_mb():.1f} MB")
+    print(f"Output Buffer Post-Write: {summary['avg_buffer_occupancy_ms']} ms (Peak buffer depth right after write)")
+    print(f"Output Queue Ahead      : ~{buffer_ahead_ms:.1f} ms (Audio ahead in buffer waiting for playback)")
+    print(f"Estimated Acoustic Lat  : ~{estimated_acoustic_lat} ms (Software E2E + Output Queue Ahead; excl. hardware DAC/driver)")
+    print(f"GPU VRAM Start/Peak/End : {gpu_vram_start:.1f} MB / {gpu_vram_peak:.1f} MB / {gpu_vram_end:.1f} MB")
     print(f"Process CPU Utilization : {avg_cpu:.1f} %")
     print("=" * 70)
+
+    if args.json_output:
+        out_path = Path(args.json_output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        telemetry_payload = {
+            "summary": summary,
+            "timing": {
+                "total_wall_s": round(total_wall, 3),
+                "total_cpu_s": round(total_cpu, 3),
+                "process_cpu_percent": round(avg_cpu, 1),
+                "buffer_ahead_ms": round(buffer_ahead_ms, 1),
+                "estimated_acoustic_lat_ms": estimated_acoustic_lat,
+                "rtf": round(summary['avg_inference_ms'] / chunk_dur_ms, 4),
+            },
+            "gpu": {
+                "vram_start_mb": round(gpu_vram_start, 1),
+                "vram_peak_mb": round(gpu_vram_peak, 1),
+                "vram_end_mb": round(gpu_vram_end, 1),
+            },
+            "config": {
+                "duration": args.duration,
+                "chunk_size": args.chunk_size,
+                "pitch_shift": args.pitch_shift,
+                "index_rate": args.index_rate,
+                "model_path": args.model_path,
+                "index_path": args.index_path,
+                "simulated_input": args.simulated_input,
+                "prebuffer": args.prebuffer,
+            },
+            "steady_underflow_timestamps": [
+                round(t - t_wall_start, 3) for t in pipeline.output_stream.steady_underflow_timestamps
+            ],
+        }
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(telemetry_payload, f, indent=2)
+        print(f"Results written to: {out_path}")
 
 
 if __name__ == "__main__":
