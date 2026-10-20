@@ -30,11 +30,19 @@ from voice_changer.tuning.language import DEFAULT_LANGUAGE, apply_language_profi
 from voice_changer.conversion.rvc.adapter import RVCAdapter
 
 
+def get_gpu_vram_mb() -> tuple[float, float]:
+    """Return (allocated_mb, reserved_mb) if CUDA is available."""
+    if torch.cuda.is_available():
+        alloc = float(torch.cuda.memory_allocated() / (1024 * 1024))
+        res = float(torch.cuda.memory_reserved() / (1024 * 1024))
+        return alloc, res
+    return 0.0, 0.0
+
+
 def get_gpu_memory_mb() -> float:
     """Return currently allocated GPU memory in MB if CUDA is available."""
-    if torch.cuda.is_available():
-        return float(torch.cuda.memory_allocated() / (1024 * 1024))
-    return 0.0
+    alloc, _ = get_gpu_vram_mb()
+    return alloc
 
 
 def main() -> None:
@@ -47,6 +55,7 @@ def main() -> None:
     parser.add_argument("--pitch-shift", type=float, default=10.0, help="Pitch shift in semitones (default: +10)")
     parser.add_argument("--language", type=str, default=DEFAULT_LANGUAGE, help="Speech language profile: vi or en (default: en)")
     parser.add_argument("--index-rate", type=float, default=None, help="Feature retrieval index rate (default: from --language profile)")
+    parser.add_argument("--filter-radius", type=int, default=None, help="Explicit filter radius for F0 median filter (default: from --language profile)")
     parser.add_argument("--model-path", type=str, default="models/weights/vctk_female_p231.pth", help="Path to RVC model .pth")
     parser.add_argument("--index-path", type=str, default="models/indices/vctk_female_p231.index", help="Path to Faiss .index")
     parser.add_argument("--simulated-input", type=str, default=None, help="Optional WAV file to stream in real-time as simulated mic")
@@ -100,8 +109,9 @@ def main() -> None:
     adapter = RVCAdapter()
     adapter.load_model(args.model_path, args.index_path)
     t_load = time.perf_counter() - t_load_start
+    alloc_loaded, res_loaded = get_gpu_vram_mb()
     print(f"      Model preloaded in {t_load:.2f}s. Model info: {adapter.model_info}")
-    print(f"      GPU VRAM allocated after loading: {get_gpu_memory_mb():.1f} MB")
+    print(f"      GPU VRAM after loading: Allocated={alloc_loaded:.1f} MB, Reserved={res_loaded:.1f} MB")
 
     print("\n[2/3] Initializing real-time pipeline...")
     cfg = apply_language_profile(
@@ -109,6 +119,8 @@ def main() -> None:
         args.language,
         index_rate=args.index_rate,
     )
+    if args.filter_radius is not None:
+        cfg.filter_radius = args.filter_radius
     print(f"Language     : {get_language_profile(args.language).name} (index_rate={cfg.index_rate}, filter_radius={cfg.filter_radius}, protect_rate={cfg.protect_rate})")
 
     pipeline = RealTimeVoiceChangerPipeline(
@@ -130,7 +142,7 @@ def main() -> None:
     print(f"\n[3/3] Running prototype session for {args.duration:.1f} seconds...")
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
-    gpu_vram_start = get_gpu_memory_mb()
+    alloc_start, res_start = get_gpu_vram_mb()
 
     t_wall_start = time.perf_counter()
     t_cpu_start = time.process_time()
@@ -196,8 +208,9 @@ def main() -> None:
     total_cpu = max(t_cpu_end - t_cpu_start, 0.0)
     avg_cpu = (total_cpu / total_wall) * 100.0
 
-    gpu_vram_end = get_gpu_memory_mb()
-    gpu_vram_peak = float(torch.cuda.max_memory_allocated() / (1024 * 1024)) if torch.cuda.is_available() else gpu_vram_end
+    alloc_end, res_end = get_gpu_vram_mb()
+    alloc_peak = float(torch.cuda.max_memory_allocated() / (1024 * 1024)) if torch.cuda.is_available() else alloc_end
+    res_peak = float(torch.cuda.max_memory_reserved() / (1024 * 1024)) if torch.cuda.is_available() else res_end
 
     summary = pipeline.metrics.summary()
 
@@ -212,7 +225,10 @@ def main() -> None:
     print(f"Chunks Captured         : {summary['chunks_captured']}")
     print(f"Chunks Converted        : {summary['chunks_converted']}")
     print(f"Chunks Dropped (Backlog): {summary['chunks_dropped']}")
-    print(f"Input Overflows         : {summary['input_overflows']}")
+    if args.simulated_input:
+        print("Input Overflows         : N/A (simulated input fixture; hardware microphone stream inactive)")
+    else:
+        print(f"Input Overflows         : {summary['input_overflows']}")
     print(f"Output Underflows Total : {summary['output_underflows']}")
     print(f"  - Startup Silence     : {summary['startup_underflows']} (expected delay before 1st chunk)")
     print(f"  - Steady-State Drops  : {summary['steady_underflows']} (active speech buffer glitches)")
@@ -234,7 +250,8 @@ def main() -> None:
     print(f"Output Buffer Post-Write: {summary['avg_buffer_occupancy_ms']} ms (Peak buffer depth right after write)")
     print(f"Output Queue Ahead      : ~{buffer_ahead_ms:.1f} ms (Audio ahead in buffer waiting for playback)")
     print(f"Estimated Acoustic Lat  : ~{estimated_acoustic_lat} ms (Software E2E + Output Queue Ahead; excl. hardware DAC/driver)")
-    print(f"GPU VRAM Start/Peak/End : {gpu_vram_start:.1f} MB / {gpu_vram_peak:.1f} MB / {gpu_vram_end:.1f} MB")
+    print(f"GPU Allocated VRAM      : Start={alloc_start:.1f} MB | Peak={alloc_peak:.1f} MB | End={alloc_end:.1f} MB")
+    print(f"GPU Reserved VRAM       : Start={res_start:.1f} MB | Peak={res_peak:.1f} MB | End={res_end:.1f} MB")
     print(f"Process CPU Utilization : {avg_cpu:.1f} %")
     print("=" * 70)
 
@@ -242,7 +259,10 @@ def main() -> None:
         out_path = Path(args.json_output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         telemetry_payload = {
-            "summary": summary,
+            "summary": {
+                **summary,
+                "input_overflows": "N/A" if args.simulated_input else summary["input_overflows"],
+            },
             "timing": {
                 "total_wall_s": round(total_wall, 3),
                 "total_cpu_s": round(total_cpu, 3),
@@ -252,9 +272,15 @@ def main() -> None:
                 "rtf": round(summary['avg_inference_ms'] / chunk_dur_ms, 4),
             },
             "gpu": {
-                "vram_start_mb": round(gpu_vram_start, 1),
-                "vram_peak_mb": round(gpu_vram_peak, 1),
-                "vram_end_mb": round(gpu_vram_end, 1),
+                "allocated_start_mb": round(alloc_start, 1),
+                "allocated_peak_mb": round(alloc_peak, 1),
+                "allocated_end_mb": round(alloc_end, 1),
+                "reserved_start_mb": round(res_start, 1),
+                "reserved_peak_mb": round(res_peak, 1),
+                "reserved_end_mb": round(res_end, 1),
+                "vram_start_mb": round(alloc_start, 1),
+                "vram_peak_mb": round(alloc_peak, 1),
+                "vram_end_mb": round(alloc_end, 1),
             },
             "config": {
                 "duration": args.duration,
