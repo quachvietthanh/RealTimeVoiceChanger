@@ -19,14 +19,25 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence"
 ]
 
-# Runtime dependencies are intentionally deferred until the environment assessment
-# phase (hardware, CUDA capabilities, audio backend, and compatible RVC inference engine)
-# is completed. See docs/roadmap.md (Phase 1).
-dependencies = []
+# Runtime dependencies match the verified Milestone 1-3A.1 stack (docs/rvc-engine-specification.md).
+# torch/torchaudio must be installed from the CUDA 12.1 index first:
+#   pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+dependencies = [
+    "torch==2.5.1",
+    "torchaudio==2.5.1",
+    "numpy>=1.23,<2.0",
+    "scipy>=1.10",
+    "soundfile>=0.12",
+    "librosa>=0.10",
+    "faiss-cpu>=1.7.4",
+    "sounddevice>=0.4.6",
+    "transformers>=4.40",
+]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0"
+    "pytest>=7.0.0",
+    "pyright>=1.1.350"
 ]
 
 [project.scripts]

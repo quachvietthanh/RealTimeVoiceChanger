@@ -23,6 +23,7 @@ if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
 from voice_changer.conversion.base import ConversionConfig
+from voice_changer.tuning.language import DEFAULT_LANGUAGE, apply_language_profile, get_language_profile
 from voice_changer.conversion.rvc.adapter import RVCAdapter
 
 
@@ -224,6 +225,8 @@ def main() -> None:
     parser.add_argument("--input", type=str, default=None, help="Path to clean input .wav test file")
     parser.add_argument("--output", type=str, default="output/offline_test_result.wav", help="Output path")
     parser.add_argument("--pitch", type=float, default=12.0, help="Semitone pitch transposition")
+    parser.add_argument("--language", type=str, default=DEFAULT_LANGUAGE, help="Speech language profile: vi or en (default: en)")
+    parser.add_argument("--index-rate", type=float, default=None, help="Index retrieval rate (default: from --language profile)")
     args = parser.parse_args()
 
     preflight = run_compatibility_preflight()
@@ -273,7 +276,12 @@ def main() -> None:
     adapter = RVCAdapter()
     adapter.load_model(assets["model_file"], assets["index_file"])
 
-    config = ConversionConfig(pitch_shift=args.pitch)
+    config = apply_language_profile(
+        ConversionConfig(pitch_shift=args.pitch),
+        args.language,
+        index_rate=args.index_rate,
+    )
+    print(f"Language: {get_language_profile(args.language).name} (index_rate={config.index_rate}, filter_radius={config.filter_radius}, protect_rate={config.protect_rate})")
     out_path = repo_root / args.output
 
     start = time.perf_counter()

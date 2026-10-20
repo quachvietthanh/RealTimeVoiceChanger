@@ -26,6 +26,7 @@ import torch
 from voice_changer.audio.devices import AudioDeviceManager
 from voice_changer.audio.pipeline import RealTimeVoiceChangerPipeline
 from voice_changer.conversion.base import ConversionConfig
+from voice_changer.tuning.language import DEFAULT_LANGUAGE, apply_language_profile, get_language_profile
 from voice_changer.conversion.rvc.adapter import RVCAdapter
 
 
@@ -44,7 +45,8 @@ def main() -> None:
     parser.add_argument("--duration", type=float, default=10.0, help="Test session duration in seconds (default: 10s)")
     parser.add_argument("--chunk-size", type=float, default=0.5, help="Chunk duration in seconds (default: 0.5s)")
     parser.add_argument("--pitch-shift", type=float, default=10.0, help="Pitch shift in semitones (default: +10)")
-    parser.add_argument("--index-rate", type=float, default=0.75, help="Feature retrieval index rate (default: 0.75)")
+    parser.add_argument("--language", type=str, default=DEFAULT_LANGUAGE, help="Speech language profile: vi or en (default: en)")
+    parser.add_argument("--index-rate", type=float, default=None, help="Feature retrieval index rate (default: from --language profile)")
     parser.add_argument("--model-path", type=str, default="models/weights/vctk_female_p231.pth", help="Path to RVC model .pth")
     parser.add_argument("--index-path", type=str, default="models/indices/vctk_female_p231.index", help="Path to Faiss .index")
     parser.add_argument("--simulated-input", type=str, default=None, help="Optional WAV file to stream in real-time as simulated mic")
@@ -102,13 +104,12 @@ def main() -> None:
     print(f"      GPU VRAM allocated after loading: {get_gpu_memory_mb():.1f} MB")
 
     print("\n[2/3] Initializing real-time pipeline...")
-    cfg = ConversionConfig(
-        pitch_shift=args.pitch_shift,
-        f0_method="rmvpe",
+    cfg = apply_language_profile(
+        ConversionConfig(pitch_shift=args.pitch_shift, f0_method="rmvpe"),
+        args.language,
         index_rate=args.index_rate,
-        filter_radius=3,
-        protect_rate=0.33,
     )
+    print(f"Language     : {get_language_profile(args.language).name} (index_rate={cfg.index_rate}, filter_radius={cfg.filter_radius}, protect_rate={cfg.protect_rate})")
 
     pipeline = RealTimeVoiceChangerPipeline(
         converter=adapter,
@@ -259,7 +260,10 @@ def main() -> None:
                 "duration": args.duration,
                 "chunk_size": args.chunk_size,
                 "pitch_shift": args.pitch_shift,
-                "index_rate": args.index_rate,
+                "language": args.language,
+                "index_rate": cfg.index_rate,
+                "filter_radius": cfg.filter_radius,
+                "protect_rate": cfg.protect_rate,
                 "model_path": args.model_path,
                 "index_path": args.index_path,
                 "simulated_input": args.simulated_input,

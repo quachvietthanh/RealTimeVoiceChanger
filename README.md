@@ -94,6 +94,9 @@ python scripts/realtime_prototype.py --chunk-size 0.5 --pitch-shift 10.0 --index
 
 # Or specify device IDs (from python scripts/list_audio_devices.py)
 python scripts/realtime_prototype.py --input-device 1 --output-device 3 --chunk-size 0.5
+
+# Choose the speech language profile: vi (Vietnamese tones) or en (default)
+python scripts/realtime_prototype.py --language vi --chunk-size 0.5
 ```
 
 ### 5. Run Test Suite
