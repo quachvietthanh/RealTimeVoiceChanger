@@ -34,6 +34,8 @@ class RVCAdapter(VoiceConverter):
         self._cached_big_npy: Optional[Any] = None
         self._model_info: Dict[str, Any] = {}
         self._applio_vc: Optional[Any] = None
+        # (left, right) reflection padding in 16 kHz samples applied before feature extraction
+        self.pad_16k: tuple[int, int] = (80, 80)
 
         # Resolve paths
         self._repo_root = Path(__file__).resolve().parent.parent.parent.parent.parent
@@ -239,7 +241,7 @@ class RVCAdapter(VoiceConverter):
 
         # Symmetrical 5ms reflection padding (80 samples at 16 kHz) to prevent HuBERT convolutional
         # encoder and HiFi-GAN from dropping boundary frames due to receptive field truncation.
-        audio_16k_padded = np.pad(audio_16k, (80, 80), mode="reflect")
+        audio_16k_padded = np.pad(audio_16k, self.pad_16k, mode="reflect")
 
         with torch.no_grad():
             with contextlib.chdir(self._applio_root):
