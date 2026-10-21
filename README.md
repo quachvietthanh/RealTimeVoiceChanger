@@ -6,19 +6,20 @@ A real-time male-to-female voice changer application for Windows using Retrieval
 
 The primary objective of this project is to create a high-quality, low-latency male-to-female voice changer for Windows using Retrieval-based Voice Conversion (RVC v2) with RMVPE pitch estimation and ContentVec feature extraction.
 
-The system is designed for live conversational use in voice platforms like Discord, OBS, and games via virtual audio drivers (such as VB-Audio Virtual Cable).
+The system is designed for live conversational use in voice platforms like Discord, OBS, and games via virtual audio drivers (such as VB-Audio Virtual Cable), with specialized tuning for Vietnamese tonal speech.
 
 ---
 
-## Current Project Status: Milestone 3A.1 Completed
+## Current Project Status: Milestone 4 In Progress
 
-> **Status:** **Operational Real-Time Pipeline Prototype**.
+> **Status:** **Operational Streaming Prototype & Custom Voice Training Preparation**.
 >
 > - **Inference Engine**: Applio Core v3.2.8 (`rvc.infer.infer.VoiceConverter`) running locally on PyTorch 2.5.1 + CUDA 12.1.
 > - **Hardware Baseline**: NVIDIA Quadro T2000 Mobile (4 GB VRAM) on Windows 11.
-> - **Real-Time Factor (RTF)**: **0.562** (Inference: ~278 ms per 500 ms audio chunk).
-> - **5-Minute Long-Run Validation**: **600/600 chunks** successfully processed with **0 steady-state dropouts**, **0 sample count mismatches**, and **stable ~445 MB VRAM**.
-> - **Active Voice Model**: Technical placeholder model `vctk_female_p231` (VCTK female speaker p231, RVC v2, 40 kHz, HiFi-GAN). Custom conversational Northern Vietnamese female training is planned for the next milestone.
+> - **Real-Time Factor (RTF)**: **0.562** (Mean inference: ~278 ms per 500 ms audio chunk).
+> - **5-Minute Continuous Validation**: **600/600 chunks** processed with **0 steady-state dropouts**, **0 sample mismatches**, and stable **~445 MB VRAM**.
+> - **Active Inference Voice Model**: Technical baseline model `vctk_female_p231` (VCTK female speaker p231, RVC v2, 40 kHz, HiFi-GAN).
+> - **Custom Voice Training (Milestone 4)**: Target Northern Vietnamese female vocal split prepared (`female_train_source.wav` 232.98s and `female_holdout.wav` 31.98s) with cryptographic manifest verification. Isolated training environment architecture (`rvc-train`) designed to maintain strict dependency isolation.
 
 ---
 
@@ -31,18 +32,35 @@ The system is designed for live conversational use in voice platforms like Disco
 | **Milestone 3** | **Real-Time Streaming Prototype**: Non-blocking I/O, async bounded worker thread, PortAudio output stream. | **DONE** |
 | **Milestone 3A** | **Latency Reduction**: Faiss in-RAM caching, 0.1s streaming padding, 0.5s chunk configuration, RTF reduced from 0.88 to 0.56. | **DONE** |
 | **Milestone 3A.1** | **Long-Run Streaming Validation**: 5-minute continuous test (600 chunks), 80-sample reflection padding, 0 steady dropouts. | **DONE** |
-| **Milestone 4** | **Custom Voice Dataset & Model Training**: High-quality Northern Vietnamese female conversational voice model. | *Planned* |
+| **Milestone 4A** | **Custom Voice Sourcing & Vocal Separation**: High-quality Northern Vietnamese female vocal extraction, listening test approval. | **DONE** |
+| **Milestone 4B** | **Training Preparation & Isolated Environment**: Dataset split, cryptographic manifest, isolated `rvc-train` venv engineering. | **IN PROGRESS** |
+| **Milestone 4C** | **Custom Voice Model Training**: Smoke test (`nvf_smoke_v0`), short run (`nvf_short_v1`), full training (`nvf_full_v1`), Faiss IVF index. | *Planned* |
 | **Milestone 5** | **Virtual Audio Cable Integration & Quality Tuning**: VB-Cable routing, Discord passthrough, acoustic tuning. | *Planned* |
 | **Milestone 6** | **Minimal Desktop GUI & Packaging**: User-friendly control panel for device selection, pitch shifting, and monitoring. | *Planned* |
 
 ---
 
+## Environment Architecture
+
+To ensure stability and prevent dependency conflicts (specifically between NumPy 2.x in modern inference and NumPy 1.x C-API ABI requirements in Applio training logger), the project uses two separated environments:
+
+1. **Inference Environment (`.venv`)**:
+   - Location: `.venv` (inside workspace).
+   - Core stack: Python 3.11.9, PyTorch 2.5.1+cu121, NumPy 2.4.x, Matplotlib 3.11.x, SoundDevice, SoundFile, Librosa, Transformers.
+   - Purpose: Running live real-time voice conversion, streaming prototype, latency profiling, and unit tests.
+2. **Dedicated Training Environment (`rvc-train`)**:
+   - Location: `C:\Users\quach\venvs\rvc-train` (isolated outside repository).
+   - Core stack: Python 3.11.9, PyTorch 2.5.1+cu121, `numpy==1.26.4`, `matplotlib==3.7.2` (required for `fig.canvas.tostring_rgb()`), `scipy==1.17.1`, `tqdm>=4.66.0`.
+   - Purpose: Offline preprocessing, ContentVec feature extraction, RMVPE F0 extraction, Faiss IVF index building, and G/D training loops.
+
+---
+
 ## Quickstart Guide
 
-### 1. Prerequisites & Environment Setup
+### 1. Prerequisites & Inference Setup
 
 - Windows 10/11 (x64)
-- Python 3.11 (`python -m venv .venv`)
+- Python 3.11 (AMD64)
 - NVIDIA GPU with CUDA Compute Capability >= 7.0 (Driver >= 530+)
 
 ```powershell
@@ -50,20 +68,33 @@ The system is designed for live conversational use in voice platforms like Disco
 git clone https://github.com/quachvietthanh/RealTimeVoiceChanger.git
 cd RealTimeVoiceChanger
 
-# Activate virtual environment
+# 1. Create and activate Python 3.11 virtual environment for inference
+python -m venv .venv
 .venv\Scripts\Activate.ps1
 
-# Verify hardware & dependencies
+# 2. Install PyTorch 2.5.1 with CUDA 12.1 support
+pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+
+# 3. Install core project dependencies in editable mode
+pip install -e .
+
+# 4. Apply Applio streaming low-latency patch
+python scripts/setup_applio_patch.py --apply
+
+# 5. Verify hardware & dependencies
 python scripts/check_environment.py
 ```
 
-### 2. Download Models & Pretrained Checkpoints
+### 2. Download Auxiliary Models & Pretrained Checkpoints
 
 Ensure auxiliary assets (`rmvpe.pt`, `contentvec/pytorch_model.bin`, `contentvec/config.json`) and the target voice model (`vctk_female_p231.pth` + `.index`) are present:
 
 ```powershell
 # Download required checkpoints (RMVPE & ContentVec)
 python scripts/download_auxiliary_assets.py
+
+# Download base pretrained models for training (v2 40k f0G/f0D)
+python scripts/download_pretraineds.py
 
 # List and verify audio devices
 python scripts/list_audio_devices.py
@@ -75,11 +106,11 @@ python scripts/list_audio_devices.py
 python scripts/offline_conversion_test.py
 ```
 
-*Expected: Converts `tests/fixtures/input_male.wav` to `output/offline_test_result.wav` with RTF ~0.35.*
+*Expected output: Converts `tests/fixtures/input_male.wav` to `output/offline_test_result.wav` with RTF ~0.35.*
 
 ### 4. Run Real-Time Streaming Prototype
 
-#### A. Simulated Streaming Regression Test (Recommended for automated validation)
+#### A. Simulated Streaming Validation (Recommended for automated benchmarking)
 
 ```powershell
 # Run 5-minute continuous streaming validation (600 chunks @ 0.5s)
@@ -107,15 +138,36 @@ python -m unittest discover -s tests
 
 ---
 
+## Custom Voice Training (Northern Vietnamese Female)
+
+The dataset preparation and model training workflow is documented in detail in:
+- [Custom Voice Training Plan](file:///C:/Users/quach/Desktop/RealTimeVoiceChanger/docs/custom-voice-training-plan.md)
+- [Hướng dẫn huấn luyện giọng Bắc Việt](file:///C:/Users/quach/Desktop/RealTimeVoiceChanger/docs/huong-dan-huan-luyen-giong-bac-viet.md)
+
+### Current Dataset Split Status
+- **Source Audio**: `data/source_audio/female_source_vocal_preview.wav` (Clean isolated vocals, 40 kHz, mono, 264.96s).
+- **Training Segment**: `data/dataset_raw/female_train_source.wav` (232.98s, ~44.7 MB, SHA-256 verified).
+- **Held-Out Test Segment**: `data/held_out_test/female_holdout.wav` (31.98s, ~6.1 MB, SHA-256 verified).
+- **Split Manifest**: `data/source_audio/dataset_split_manifest.json` with cryptographic SHA-256 verification.
+
+---
+
 ## Project Structure
 
 ```text
 RealTimeVoiceChanger/
 ├── config/                         # Configuration guidelines and local overrides
+├── data/                           # Dataset preparation & audio assets
+│   ├── dataset_raw/                # Training partition (female_train_source.wav)
+│   ├── held_out_test/              # Evaluation partition (female_holdout.wav)
+│   └── source_audio/               # Clean vocal preview & dataset_split_manifest.json
 ├── docs/                           # Technical documentation & architecture
+│   ├── ab-padding-report.md        # Edge padding & reflection artifact analysis
 │   ├── architecture.md             # System architecture & component design
 │   ├── custom-voice-training-plan.md # Vietnamese custom voice dataset & training plan
+│   ├── huong-dan-huan-luyen-giong-bac-viet.md # Vietnamese training quick guide
 │   ├── model-setup.md              # Checkpoint specification & asset checksums
+│   ├── overlap-crossfade-report.md # Overlap and crossfade latency analysis
 │   ├── quality-test-plan.md        # Voice quality and latency test methodology
 │   ├── roadmap.md                  # Milestone-driven implementation plan
 │   ├── rvc-engine-specification.md # Selected Applio Core inference specification
@@ -126,12 +178,17 @@ RealTimeVoiceChanger/
 │   └── weights/                    # Voice model .pth weights
 ├── output/                         # Generated test audio and JSON telemetry logs
 ├── scripts/
+│   ├── ab_padding_test.py          # A/B edge padding evaluation
 │   ├── check_environment.py        # Environment & GPU preflight audit
 │   ├── download_auxiliary_assets.py# Automated downloader for RMVPE & ContentVec
+│   ├── download_pretraineds.py     # Base pretrained weights (f0G40k / f0D40k)
 │   ├── list_audio_devices.py       # Audio device enumeration
 │   ├── offline_conversion_test.py  # Offline WAV conversion benchmark
+│   ├── overlap_crossfade_experiment.py # Overlap crossfade testing
 │   ├── profile_stages.py           # Deep stage-by-stage latency profiler
-│   └── realtime_prototype.py       # Real-time prototype runner (live mic & simulated)
+│   ├── realtime_prototype.py       # Real-time prototype runner (live mic & simulated)
+│   ├── separate_vocals_preview.py  # Vocal separation and extraction utility
+│   └── setup_applio_patch.py       # Applio streaming patch manager
 ├── src/voice_changer/
 │   ├── audio/                      # Audio I/O, device management & streaming pipeline
 │   │   ├── devices.py              # SoundDevice enumeration
@@ -147,7 +204,7 @@ RealTimeVoiceChanger/
 │   ├── fixtures/                   # Audio fixtures for test reproducibility
 │   └── unit/                       # Component test suite
 └── third_party/
-    └── applio/                     # Pinned Applio Core v3.2.8 submodule
+    └── applio/                     # Pinned Applio Core v3.2.8 submodule (commit 0c92ac5)
 ```
 
 ---
