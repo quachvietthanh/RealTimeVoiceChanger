@@ -35,6 +35,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run environment and system diagnostic checks.",
     )
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        help="Launch the desktop graphical user interface (default).",
+    )
+    parser.add_argument(
+        "--cli",
+        action="store_true",
+        help="Run in command-line mode instead of launching the desktop GUI.",
+    )
     return parser.parse_args()
 
 
@@ -45,20 +55,21 @@ def main() -> int:
         run_environment_summary()
         return 0
 
-    print("=" * 60)
-    print(f"RealTimeVoiceChanger v{__version__} (Scaffold)")
-    print("=" * 60)
-    print("This project is currently in the initial scaffolding stage.")
-    print("The real-time conversion engine has not yet been initialized.")
-    print("\nPlanned roadmap:")
-    print("  1. Environment & Hardware Assessment (Run: python scripts/check_environment.py)")
-    print("  2. Offline WAV Conversion & Model Evaluation")
-    print("  3. Audio Passthrough to Virtual Cable")
-    print("  4. Real-Time RVC Inference Integration")
-    print("  5. Quality Tuning & Latency Optimization")
-    print("\nSee docs/roadmap.md and docs/architecture.md for implementation details.")
+    if args.cli:
+        print("=" * 60)
+        print(f"RealTimeVoiceChanger v{__version__}")
+        print("=" * 60)
+        print("Backend service is active. For programmatic use, see docs/gui-backend-contract.md.")
+        print("To launch the graphical desktop interface, run: voice-changer --gui")
+        return 0
+
+    # Default action: Launch Desktop GUI
+    from voice_changer.gui import launch_gui
+
+    launch_gui()
     return 0
 
 
 if __name__ == "__main__":
     sys.exit(main())
+

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "default_profile": "vctk_p231",
+  "profiles": [
+    {
+      "id": "vctk_p231",
+      "display_name": "VCTK p231 (prototype)",
+      "description": "English VCTK female speaker p231. Technical placeholder used for the Milestone 2-3 pipeline baselines.",
+      "status": "prototype",
+      "language": "en",
+      "model_path": "models/weights/vctk_female_p231.pth",
+      "model_sha256": "12f819e129c6e48779439e491b85593b8819d094f751c3515ea13be6bd8b5a59",
+      "index_path": "models/indices/vctk_female_p231.index",
+      "index_sha256": "14c3a6fb421ed0c77654bb9ed5778307ff0204d7b047b6bbe37922af42f601ab",
+      "defaults": {"pitch_shift": 12.0, "f0_method": "rmvpe", "index_rate": 0.75, "filter_radius": 3, "protect_rate": 0.33},
+      "provenance": {"source": "Nekochu/RVC-VCTK_Voice-sample@005c2f9", "doc": "docs/selected-voice-model.md"},
+      "notes": ""
+    },
+    {
+      "id": "voice_a_preview",
+      "display_name": "Voice A (preview)",
+      "description": "Speaker A, Northern Vietnamese female. Preview checkpoint nvf_short_v1 epoch 50.",
+      "status": "preview",
+      "language": "vi",
+      "model_path": "third_party/applio/logs/nvf_short_v1/nvf_short_v1_50e_5350s.pth",
+      "model_sha256": "d6ed4d41fed6b30e6f3b95916865607343ecf782b6351af8947dbff768b3cc28",
+      "index_path": "third_party/applio/logs/nvf_short_v1/added_nvf_short_v1_v2.index",
+      "index_sha256": "798371f59f8719ea264c985329dc1c6d0755c7505da61f8143e5d2a04eba33e0",
+      "defaults": {"pitch_shift": 12.0, "f0_method": "rmvpe", "index_rate": 0.5, "filter_radius": 2, "protect_rate": 0.4},
+      "provenance": {"experiment": "nvf_short_v1", "checkpoint": "50e_5350s", "dataset": "data/dataset_train_peak0p88", "evaluation": "output/nvf_short_v1_audit_2026-10-21/README.md"},
+      "notes": "e50 is a temporary preview choice, not owner-approved. Pending owner listening."
+    },
+    {
+      "id": "voice_b_preview",
+      "display_name": "Voice B (preview)",
+      "description": "Speaker B, warm/soft female (English-leaning source). 25-epoch preview checkpoint spkb_preview_v2 epoch 25.",
+      "status": "preview",
+      "language": "vi",
+      "model_path": "third_party/applio/logs/spkb_preview_v2/spkb_preview_v2_25e_1975s.pth",
+      "model_sha256": "06f6ec38e1d87336b012eb4a2b7edb0b8457e8e48391e6a08d732c36ec244532",
+      "index_path": "third_party/applio/logs/spkb_preview_v2/added_spkb_preview_v2_v2.index",
+      "index_sha256": "fbd308fe60329dcbf159641669e2210362ab8115ceabd13ca70e61dd9ab13f7f",
+      "defaults": {"pitch_shift": 14.0, "f0_method": "rmvpe", "index_rate": 0.25, "filter_radius": 2, "protect_rate": 0.4},
+      "provenance": {"experiment": "spkb_preview_v2", "checkpoint": "25e_1975s", "dataset": "data/speaker_b/dataset_split_manifest.json", "evaluation": "output/spkb_preview_v2_2026-10-21/README.md"},
+      "notes": "Checkpoint e25 and settings p+14/index 0.25 are provisional technical defaults, not an owner choice. Output is ~9 dB quieter than voice A. Pending owner listening."
+    }
+  ]
+}

@@ -48,6 +48,8 @@ class AudioOutputStream:
         self._playback_started = False
         self._is_stopping = False
         self._overflow_count = 0
+        self._status_flag_count = 0
+        self._device_latency_s: Optional[float] = None
         self._steady_underflow_timestamps: list[float] = []
 
     @property
@@ -82,7 +84,18 @@ class AudioOutputStream:
 
     @property
     def overflow_count(self) -> int:
+        """Writes that exceeded max_buffer_seconds; the oldest buffered audio was discarded."""
         return self._overflow_count
+
+    @property
+    def device_latency_s(self) -> Optional[float]:
+        """Output latency PortAudio reported for the last opened stream (None if never opened)."""
+        return self._device_latency_s
+
+    @property
+    def status_flag_count(self) -> int:
+        """Callbacks that reported any PortAudio status flag."""
+        return self._status_flag_count
 
     @property
     def buffered_samples(self) -> int:
@@ -113,8 +126,9 @@ class AudioOutputStream:
         time_info: dict,
         status: sd.CallbackFlags,
     ) -> None:
+        # Counter only: logging can block, and this runs on the PortAudio thread.
         if status:
-            logger.warning("Audio output status flag: %s", status)
+            self._status_flag_count += 1
 
         with self._lock:
             if not self._playback_started:
@@ -156,6 +170,26 @@ class AudioOutputStream:
         if self._is_active:
             return
 
+        self._reset_state()
+        stream = sd.OutputStream(
+            device=self.device_id,
+            channels=self.channels,
+            samplerate=self.sample_rate,
+            blocksize=self.block_size,
+            dtype="float32",
+            callback=self._audio_callback,
+        )
+        try:
+            stream.start()
+        except BaseException:
+            stream.close()
+            raise
+        self._stream = stream
+        self._device_latency_s = float(stream.latency)
+        self._is_active = True
+
+    def _reset_state(self) -> None:
+        """Clear the buffer and all counters for a new session."""
         with self._lock:
             self._buffer = np.zeros((0, self.channels), dtype=np.float32)
             self._first_chunk_received = False
@@ -167,18 +201,8 @@ class AudioOutputStream:
             self._steady_underflow_count = 0
             self._shutdown_underflow_count = 0
             self._overflow_count = 0
+            self._status_flag_count = 0
             self._steady_underflow_timestamps = []
-
-        self._stream = sd.OutputStream(
-            device=self.device_id,
-            channels=self.channels,
-            samplerate=self.sample_rate,
-            blocksize=self.block_size,
-            dtype="float32",
-            callback=self._audio_callback,
-        )
-        self._stream.start()
-        self._is_active = True
 
     def write_chunk(self, audio_data: np.ndarray) -> None:
         """Enqueue converted audio samples (float32, 1D mono or 2D stereo)."""

@@ -4,92 +4,106 @@ This roadmap establishes the phased milestones for building RealTimeVoiceChanger
 
 ```mermaid
 graph TD
-    M1["1. Environment & Hardware Assessment"] --> M2["2. Offline WAV Conversion & Model Quality"]
-    M2 --> M3["3. Mic & Virtual-Cable Passthrough (No AI)"]
-    M3 --> M4["4. Real-Time RVC Integration"]
-    M4 --> M5["5. Feminine Voice Quality Tuning"]
-    M5 --> M6["6. Latency & Stability Optimization"]
-    M6 --> M7["7. Minimal GUI & Packaging"]
+    M1["1. Environment & Hardware Assessment (DONE)"] --> M2["2. Offline WAV Conversion & Model Quality (DONE)"]
+    M2 --> M3["3. Real-Time Streaming Prototype (DONE)"]
+    M3 --> M3A["3A & 3A.1. Latency & Stability Validation (DONE)"]
+    M3A --> M4["4. Custom Voice Training (IN PROGRESS: A/B previews)"]
+    M4 --> M5["5. Virtual Audio Cable & Discord Routing (IN PROGRESS: backend)"]
+    M5 --> M6["6. Desktop GUI & Packaging (IN PROGRESS: backend contract)"]
 ```
 
 ---
 
-## Milestone 1: Environment and Hardware Assessment
+## Milestone 1: Environment and Hardware Assessment [COMPLETED]
 
 - **Objective:** Evaluate local Windows hardware, audio subsystems, and identify a compatible RVC inference runtime without breaking local environments.
-- **Key Tasks:**
-  - Audit Python version, Windows platform architecture, and available GPU/CUDA compute capabilities.
-  - Test audio driver APIs available on Windows (WASAPI, MME, DirectSound).
-  - Select and document compatible versions for PyTorch, CUDA, and the target RVC inference backend.
-- **Exit Criteria:** Environment diagnostic report generated confirming compatible runtime targets.
+- **Completed Deliverables:**
+  - Audited Python version (3.11.9), Windows 11 platform architecture, and NVIDIA Quadro T2000 Mobile GPU (Turing, compute capability 7.5, 4 GB VRAM).
+  - Pinned and isolated Applio Core v3.2.8 (`third_party/applio`) with PyTorch 2.5.1 + CUDA 12.1 runtime.
+  - Implemented `scripts/check_environment.py` and `scripts/download_auxiliary_assets.py` to automate verification and asset fetching (`rmvpe.pt` and `contentvec`).
+- **Exit Status:** **PASS**. Clean reproducible environment verified.
 
 ---
 
-## Milestone 2: Offline WAV Conversion and Model-Quality Evaluation
+## Milestone 2: Offline WAV Conversion and Model Evaluation [COMPLETED]
 
 - **Objective:** Verify voice transformation quality on static audio files before introducing real-time streaming complexity.
-- **Key Tasks:**
-  - Acquire small, approved clean voice test samples (male speech).
-  - Set up local RVC model files (`.pth` weights and `.index` file).
-  - Implement and test offline conversion using `conversion/rvc/adapter.py`.
-  - Evaluate output naturalness, pitch accuracy, and presence of artifacts.
-- **Exit Criteria:** Offline conversion produces a clear, natural-sounding feminine voice without glitching.
+- **Completed Deliverables:**
+  - Set up target voice model `vctk_female_p231` (`models/weights/vctk_female_p231.pth` and `models/indices/vctk_female_p231.index`).
+  - Implemented `RVCAdapter` (`src/voice_changer/conversion/rvc/adapter.py`) wrapping Applio Core v3.2.8.
+  - Created automated offline test suite `scripts/offline_conversion_test.py`.
+  - Achieved offline conversion Real-Time Factor (RTF) of **0.345** (11.1s processing for 32.2s audio), zero clipping, zero silence.
+- **Exit Status:** **PASS**. Model loading, pitch extraction, feature retrieval, and audio synthesis validated.
 
 ---
 
-## Milestone 3: Microphone and Virtual-Cable Passthrough (Without AI)
+## Milestone 3: Real-Time Audio Pipeline Prototype [COMPLETED]
 
-- **Objective:** Validate the audio I/O streaming foundation and routing to VB-Audio Virtual Cable with zero AI inference.
-- **Key Tasks:**
-  - Implement `audio/devices.py` to enumerate microphones and virtual cable inputs.
-  - Implement `audio/input_stream.py` and `audio/output_stream.py`.
-  - Build `pipeline/realtime.py` in passthrough mode (direct input-to-output chunk routing).
-  - Route audio into VB-Audio Virtual Cable and verify reception in Discord/recording tools.
-- **Exit Criteria:** Clean, crackle-free audio passthrough with baseline hardware latency < 20ms.
-
----
-
-## Milestone 4: Real-Time RVC Integration
-
-- **Objective:** Connect the chunked real-time audio pipeline to the RVC conversion adapter.
-- **Key Tasks:**
-  - Implement real-time ring buffering, chunk windowing, and overlap-add crossfading.
-  - Integrate `conversion/rvc/adapter.py` into the active streaming loop.
-  - Verify continuous audio flow without buffer underruns under steady-state conditions.
-- **Exit Criteria:** Continuous real-time voice conversion operating from microphone input to virtual cable output.
+- **Objective:** Validate the audio I/O streaming foundation and asynchronous neural inference pipeline.
+- **Completed Deliverables:**
+  - Implemented `AudioInputStream` and `AudioOutputStream` in `src/voice_changer/audio/` using SoundDevice/PortAudio.
+  - Built `RealTimeVoiceChangerPipeline` (`src/voice_changer/audio/pipeline.py`) with bounded asynchronous worker thread queue (`queue.Queue(maxsize=3)`).
+  - Created `scripts/realtime_prototype.py` supporting both physical microphone input and synchronized simulated WAV streaming.
+  - Initial baseline with 1.0s chunks converted in real-time (RTF ~0.88, turnaround ~890ms).
+- **Exit Status:** **PASS**. Continuous non-blocking audio streaming operational.
 
 ---
 
-## Milestone 5: Feminine Voice Quality Tuning
+## Milestone 3A & 3A.1: Latency Reduction & 5-Minute Stability Validation [COMPLETED]
 
-- **Objective:** Optimize male-to-female voice transformation parameters for maximum naturalness.
-- **Key Tasks:**
-  - Calibrate pitch shift (+12 semitones baseline, fine-tuned per vocal range).
-  - Benchmark pitch extraction algorithms (RMVPE vs Harvest vs PM) for latency vs accuracy.
-  - Adjust feature retrieval index rate (`index_rate`) to balance timbre matching vs acoustic artifacts.
-  - Configure consonant protection (`protect_rate`) and breath preservation.
-  - Save optimized configuration profiles into `tuning/presets.py`.
-- **Exit Criteria:** Voice conversion achieves high speech intelligibility and natural feminine timbre without robotic distortions.
-
----
-
-## Milestone 6: Latency and Stability Optimization
-
-- **Objective:** Minimize end-to-end turnaround latency while maintaining robust streaming stability.
-- **Key Tasks:**
-  - Profile end-to-end latency: input capture + buffer slicing + inference + overlap blending + output buffer.
-  - Benchmark chunk size tradeoffs (e.g. 128ms vs 256ms vs 512ms).
-  - Optimize memory copies and GPU tensor allocation in the adapter.
-  - Conduct extended duration stress tests (30+ minutes) to ensure no memory leaks or stream degradation.
-- **Exit Criteria:** Stable end-to-end latency suitable for conversation (< 250-300ms target on capable GPU) with 0 dropped frames over 30 minutes.
+- **Objective:** Minimize turnaround latency and prove multi-minute streaming stability without buffer underruns.
+- **Completed Deliverables:**
+  - **Latency Optimizations:**
+    - Cached Faiss feature index in RAM to eliminate per-chunk disk reload overhead (~165 ms saved).
+    - Reduced streaming edge padding from 1.0s/3.0s down to 0.1s (1600 samples @ 16 kHz).
+    - Transitioned baseline chunk size from 1.0s to 0.50s (20,000 samples @ 40 kHz).
+    - Reduced Mean Inference Latency from ~890 ms to **~280.8 ms** (RTF = **0.562**).
+  - **Algorithm & Sample Count Alignment:**
+    - Resolved ContentVec frame truncation by applying 80-sample reflection padding per side at 16 kHz, producing exact 70 feature frames and exact 20,000 output samples (100.0% sample integrity, zero loss).
+  - **Long-Run 5-Minute Validation:**
+    - Processed **600/600 chunks** over 301.0 seconds continuously.
+    - Achieved **0 steady-state underruns**, **0 queue backlog drops**, **0 input overflows**, and **0 sample count mismatches**.
+    - Maintained stable GPU VRAM at **~444.5 MB** with zero memory leaks.
+- **Exit Status:** **PASS**. Pipeline stability and telemetry thoroughly proven.
 
 ---
 
-## Milestone 7: Minimal GUI and Packaging
+## Milestone 4: Custom Voice Dataset & Model Training [IN PROGRESS]
 
-- **Objective:** Provide a lightweight, user-friendly interface for device selection and preset tuning.
+- **Status (2026-10-21):** two preview voices trained and indexed, both **pending owner listening**:
+  - Voice A (speaker A, Northern Vietnamese): `nvf_short_v1`, 100 epochs, checkpoints e25/e50/e75/e100 + index; offline audit in `output/nvf_short_v1_audit_2026-10-21/`.
+  - Voice B (speaker B, warm/soft, English-leaning source, ~117 s of training speech): `spkb_preview_v2`, 25 epochs, checkpoints every 5 epochs + reproducible index; offline evaluation in `output/spkb_preview_v2_2026-10-21/`.
+  - No full training run. No checkpoint approved for production.
+
+- **Objective:** Create a warm, soft, natural Northern Vietnamese female conversational voice model to replace the English VCTK p231 technical placeholder.
 - **Key Tasks:**
-  - Build a clean desktop interface for selecting audio devices, loading models, and adjusting pitch/volume.
-  - Add visual audio meters for input signal, output signal, and active latency readout.
-  - Package the application for simple local execution.
-- **Exit Criteria:** A self-contained, responsive desktop application ready for daily use.
+  - Curate high-quality, dry conversational recordings (consented speaker dataset, 24-bit 48kHz WAV, 1–3 hours).
+  - Clean and segment audio (denoising, loudness normalization, silence trimming).
+  - Train custom RVC v2 model with RMVPE pitch guidance and extract Faiss retrieval index.
+  - Validate model inference within the existing pipeline adapter without architectural modifications.
+- **Exit Criteria:** High speech intelligibility and warm, organic Northern Vietnamese feminine timbre.
+
+---
+
+## Milestone 5: Virtual Audio Cable Integration & Quality Tuning [IN PROGRESS]
+
+- **Status (2026-10-21):** backend device enumeration, 40 kHz capability checks, virtual-cable detection and stream-loss detection implemented and unit-tested. **Not physically verified** (no VB-Cable installed on the development machine). Manual procedure: `docs/audio-routing.md`.
+
+- **Objective:** Route converted audio seamlessly to Discord, OBS, and games, and optimize vocal acoustics.
+- **Key Tasks:**
+  - Connect `AudioOutputStream` directly to VB-Audio Virtual Cable / Hi-Fi Cable.
+  - Implement dynamic noise gate, formant shift corrections, and consonant protection tuning (`protect_rate`).
+  - Create pre-configured acoustic presets in `src/voice_changer/tuning/presets.py`.
+- **Exit Criteria:** Seamless voice chat in Discord with minimal acoustic leakage and high intelligibility.
+
+---
+
+## Milestone 6: Minimal Desktop GUI & Packaging [IN PROGRESS]
+
+- **Status (2026-10-21):** backend API for the GUI implemented (`VoiceChangerService`, `docs/gui-backend-contract.md`) with headless contract tests. The GUI itself (owned by Gemini Flash 3.8) and packaging are not started.
+
+- **Objective:** Provide a lightweight, user-friendly control interface for daily operation.
+- **Key Tasks:**
+  - Build a clean GUI for selecting audio devices, setting pitch shift, choosing models, and monitoring latency meters.
+  - Package standalone executable or launch script with automatic GPU preflight checking.
+- **Exit Criteria:** Self-contained, responsive desktop application ready for non-technical usage.

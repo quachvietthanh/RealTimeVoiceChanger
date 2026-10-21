@@ -30,6 +30,8 @@ class AudioInputStream:
         self._stream: Optional[sd.InputStream] = None
         self._is_active = False
         self._overflow_count = 0
+        self._status_flag_count = 0
+        self._device_latency_s: Optional[float] = None
 
     @property
     def is_active(self) -> bool:
@@ -39,19 +41,32 @@ class AudioInputStream:
     def overflow_count(self) -> int:
         return self._overflow_count
 
+    @property
+    def device_latency_s(self) -> Optional[float]:
+        """Input latency PortAudio reported for the last opened stream (None if never opened)."""
+        return self._device_latency_s
+
+    @property
+    def status_flag_count(self) -> int:
+        """Callbacks that reported any PortAudio status flag (overflow included)."""
+        return self._status_flag_count
+
     def start(self, callback: Callable[[np.ndarray], None]) -> None:
         """Start capturing audio blocks and dispatching them to the callback."""
         if self._is_active:
             return
 
         def _audio_callback(indata: np.ndarray, frames: int, time_info: dict, status: sd.CallbackFlags) -> None:
+            # Counters only: logging can block, and this runs on the PortAudio thread.
             if status:
+                self._status_flag_count += 1
                 if status.input_overflow:
                     self._overflow_count += 1
-                logger.warning("Audio input status flag: %s", status)
             callback(indata.copy())
 
-        self._stream = sd.InputStream(
+        self._overflow_count = 0
+        self._status_flag_count = 0
+        stream = sd.InputStream(
             device=self.device_id,
             channels=self.channels,
             samplerate=self.sample_rate,
@@ -59,7 +74,13 @@ class AudioInputStream:
             dtype="float32",
             callback=_audio_callback,
         )
-        self._stream.start()
+        try:
+            stream.start()
+        except BaseException:
+            stream.close()
+            raise
+        self._stream = stream
+        self._device_latency_s = float(stream.latency)
         self._is_active = True
 
     def stop(self) -> None:
