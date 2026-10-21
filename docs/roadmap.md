@@ -7,9 +7,9 @@ graph TD
     M1["1. Environment & Hardware Assessment (DONE)"] --> M2["2. Offline WAV Conversion & Model Quality (DONE)"]
     M2 --> M3["3. Real-Time Streaming Prototype (DONE)"]
     M3 --> M3A["3A & 3A.1. Latency & Stability Validation (DONE)"]
-    M3A --> M4["4. Custom Northern VN Voice Training (PLANNED)"]
-    M4 --> M5["5. Virtual Audio Cable & Discord Routing (PLANNED)"]
-    M5 --> M6["6. Minimal Desktop GUI & Packaging (PLANNED)"]
+    M3A --> M4["4. Custom Voice Training (IN PROGRESS: A/B previews)"]
+    M4 --> M5["5. Virtual Audio Cable & Discord Routing (IN PROGRESS: backend)"]
+    M5 --> M6["6. Desktop GUI & Packaging (IN PROGRESS: backend contract)"]
 ```
 
 ---
@@ -68,7 +68,12 @@ graph TD
 
 ---
 
-## Milestone 4: Custom Voice Dataset & Model Training [PLANNED]
+## Milestone 4: Custom Voice Dataset & Model Training [IN PROGRESS]
+
+- **Status (2026-10-21):** two preview voices trained and indexed, both **pending owner listening**:
+  - Voice A (speaker A, Northern Vietnamese): `nvf_short_v1`, 100 epochs, checkpoints e25/e50/e75/e100 + index; offline audit in `output/nvf_short_v1_audit_2026-10-21/`.
+  - Voice B (speaker B, warm/soft, English-leaning source, ~117 s of training speech): `spkb_preview_v2`, 25 epochs, checkpoints every 5 epochs + reproducible index; offline evaluation in `output/spkb_preview_v2_2026-10-21/`.
+  - No full training run. No checkpoint approved for production.
 
 - **Objective:** Create a warm, soft, natural Northern Vietnamese female conversational voice model to replace the English VCTK p231 technical placeholder.
 - **Key Tasks:**
@@ -80,7 +85,9 @@ graph TD
 
 ---
 
-## Milestone 5: Virtual Audio Cable Integration & Quality Tuning [PLANNED]
+## Milestone 5: Virtual Audio Cable Integration & Quality Tuning [IN PROGRESS]
+
+- **Status (2026-10-21):** backend device enumeration, 40 kHz capability checks, virtual-cable detection and stream-loss detection implemented and unit-tested. **Not physically verified** (no VB-Cable installed on the development machine). Manual procedure: `docs/audio-routing.md`.
 
 - **Objective:** Route converted audio seamlessly to Discord, OBS, and games, and optimize vocal acoustics.
 - **Key Tasks:**
@@ -91,7 +98,9 @@ graph TD
 
 ---
 
-## Milestone 6: Minimal Desktop GUI & Packaging [PLANNED]
+## Milestone 6: Minimal Desktop GUI & Packaging [IN PROGRESS]
+
+- **Status (2026-10-21):** backend API for the GUI implemented (`VoiceChangerService`, `docs/gui-backend-contract.md`) with headless contract tests. The GUI itself (owned by Gemini Flash 3.8) and packaging are not started.
 
 - **Objective:** Provide a lightweight, user-friendly control interface for daily operation.
 - **Key Tasks:**

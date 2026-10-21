@@ -14,7 +14,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 import numpy as np
 
+from voice_changer.audio.crossfade import ChunkStitcher
 from voice_changer.audio.input_stream import AudioInputStream
+from voice_changer.audio.noise_suppression import NoiseSuppressionSettings, NoiseSuppressionStage
 from voice_changer.audio.output_stream import AudioOutputStream
 from voice_changer.conversion.base import ConversionConfig, VoiceConverter
 
@@ -34,9 +36,24 @@ class PipelineMetrics:
     steady_underflow_count: int = 0
     shutdown_underflow_count: int = 0
     inference_errors: int = 0
+    consecutive_inference_errors: int = 0
+    last_inference_error: str = ""
+    output_overflow_count: int = 0
+    input_status_flags: int = 0
+    output_status_flags: int = 0
     sample_count_mismatches: int = 0
     expected_chunk_samples: int = 0
     last_converted_chunk_samples: int = 0
+    stitch_resets: int = 0
+    algorithmic_delay_ms: float = 0.0
+    noise_suppression_times_ms: list[float] = field(default_factory=list)
+    noise_suppression_enabled: bool = False
+    noise_suppression_mode: str = ""
+    noise_suppression_active: bool = False
+    noise_suppression_failed: bool = False
+    noise_suppression_errors: int = 0
+    noise_suppression_last_error: str = ""
+    noise_suppression_latency_ms: float = 0.0
 
     inference_times_ms: list[float] = field(default_factory=list)
     queue_wait_times_ms: list[float] = field(default_factory=list)
@@ -103,6 +120,10 @@ class PipelineMetrics:
     def avg_buffer_occupancy_ms(self) -> float:
         return float(np.mean(self.output_buffer_occupancy_ms)) if self.output_buffer_occupancy_ms else 0.0
 
+    @staticmethod
+    def _pct(values: list[float], q: float) -> float:
+        return float(np.percentile(values, q)) if values else 0.0
+
     def summary(self) -> Dict[str, Any]:
         return {
             "session_duration_s": round(self.session_duration_s, 2),
@@ -115,6 +136,11 @@ class PipelineMetrics:
             "steady_underflows": self.steady_underflow_count,
             "shutdown_underflows": self.shutdown_underflow_count,
             "inference_errors": self.inference_errors,
+            "consecutive_inference_errors": self.consecutive_inference_errors,
+            "last_inference_error": self.last_inference_error,
+            "output_overflows": self.output_overflow_count,
+            "input_status_flags": self.input_status_flags,
+            "output_status_flags": self.output_status_flags,
             "expected_chunk_samples": self.expected_chunk_samples,
             "last_converted_chunk_samples": self.last_converted_chunk_samples,
             "sample_count_mismatches": self.sample_count_mismatches,
@@ -123,14 +149,35 @@ class PipelineMetrics:
             "min_inference_ms": round(self.min_inference_ms, 1),
             "max_inference_ms": round(self.max_inference_ms, 1),
             "p95_inference_ms": round(self.p95_inference_ms, 1),
+            "p99_inference_ms": round(self._pct(self.inference_times_ms, 99), 1),
             "avg_queue_wait_ms": round(self.avg_queue_wait_ms, 2),
             "median_queue_wait_ms": round(self.median_queue_wait_ms, 2),
             "p95_queue_wait_ms": round(self.p95_queue_wait_ms, 2),
+            "p99_queue_wait_ms": round(self._pct(self.queue_wait_times_ms, 99), 2),
+            "max_queue_wait_ms": round(max(self.queue_wait_times_ms, default=0.0), 2),
             "speech_onset_latency_ms": round(self.speech_onset_latency_ms, 1),
             "avg_software_e2e_ms": round(self.avg_software_e2e_ms, 1),
             "median_software_e2e_ms": round(self.median_software_e2e_ms, 1),
             "p95_software_e2e_ms": round(self.p95_software_e2e_ms, 1),
+            "p99_software_e2e_ms": round(self._pct(self.software_e2e_times_ms, 99), 1),
+            "max_software_e2e_ms": round(max(self.software_e2e_times_ms, default=0.0), 1),
             "avg_buffer_occupancy_ms": round(self.avg_buffer_occupancy_ms, 1),
+            "p95_buffer_occupancy_ms": round(self._pct(self.output_buffer_occupancy_ms, 95), 1),
+            "max_buffer_occupancy_ms": round(max(self.output_buffer_occupancy_ms, default=0.0), 1),
+            "stitch_resets": self.stitch_resets,
+            "algorithmic_delay_ms": round(self.algorithmic_delay_ms, 1),
+            "noise_suppression_enabled": self.noise_suppression_enabled,
+            "noise_suppression_mode": self.noise_suppression_mode,
+            "noise_suppression_active": self.noise_suppression_active,
+            "noise_suppression_failed": self.noise_suppression_failed,
+            "noise_suppression_errors": self.noise_suppression_errors,
+            "noise_suppression_last_error": self.noise_suppression_last_error,
+            "noise_suppression_latency_ms": round(self.noise_suppression_latency_ms, 1),
+            "avg_noise_suppression_ms": round(float(np.mean(self.noise_suppression_times_ms))
+                                              if self.noise_suppression_times_ms else 0.0, 2),
+            "p95_noise_suppression_ms": round(self._pct(self.noise_suppression_times_ms, 95), 2),
+            "p99_noise_suppression_ms": round(self._pct(self.noise_suppression_times_ms, 99), 2),
+            "max_noise_suppression_ms": round(max(self.noise_suppression_times_ms, default=0.0), 2),
         }
 
 
@@ -147,7 +194,41 @@ class RealTimeVoiceChangerPipeline:
         chunk_duration_s: float = 0.5,
         max_queue_size: int = 3,
         prebuffer_duration_s: float = 0.15,
+        input_stream: Optional[AudioInputStream] = None,
+        output_stream: Optional[AudioOutputStream] = None,
+        context_duration_s: float = 0.2,
+        crossfade_duration_s: float = 0.05,
+        sola_search_s: float = 0.01,
+        noise_suppression: Optional[NoiseSuppressionSettings] = None,
     ) -> None:
+        """Create a stopped pipeline.
+
+        `input_stream` / `output_stream` default to sounddevice streams on the given devices; tests
+        and simulations may pass objects with the same interface.
+
+        Chunk seams: each model call also sees `context_duration_s` of the previous input, and
+        consecutive outputs are joined with a `crossfade_duration_s` SOLA crossfade (see
+        audio/crossfade.py). This adds about crossfade + search/2 of delay plus the inference cost of
+        the context. All three 0 restores plain end-to-end joining, which leaves a seam at every chunk
+        boundary.
+
+        Noise suppression: with `noise_suppression` settings (the service always passes them) the worker
+        runs NoiseSuppressionStage on each captured chunk before inference. The stage always delays the
+        audio by one 20 ms frame, on or off, so it can be toggled live without shifting the timeline.
+        None means no stage at all (the exact behaviour before noise suppression existed).
+
+        Raises:
+            ValueError: If the sample rate, chunk duration, queue size, prebuffer, seam lengths or noise
+                suppression settings are invalid.
+        """
+        if sample_rate <= 0:
+            raise ValueError(f"sample_rate must be positive, got {sample_rate}")
+        if int(sample_rate * chunk_duration_s) <= 0:
+            raise ValueError(f"chunk_duration_s must give at least one sample, got {chunk_duration_s}")
+        if max_queue_size < 1:
+            raise ValueError(f"max_queue_size must be >= 1, got {max_queue_size}")
+        if prebuffer_duration_s < 0:
+            raise ValueError(f"prebuffer_duration_s must be >= 0, got {prebuffer_duration_s}")
         self.converter = converter
         self.config = conversion_config or ConversionConfig()
         self.input_device_id = input_device_id
@@ -156,20 +237,30 @@ class RealTimeVoiceChangerPipeline:
         self.chunk_duration_s = chunk_duration_s
         self.chunk_samples = int(sample_rate * chunk_duration_s)
         self.prebuffer_duration_s = prebuffer_duration_s
+        self._stitcher = ChunkStitcher(
+            self.chunk_samples,
+            context_samples=int(round(sample_rate * context_duration_s)),
+            crossfade_samples=int(round(sample_rate * crossfade_duration_s)),
+            search_samples=int(round(sample_rate * sola_search_s)),
+        )
+        self._noise_stage: Optional[NoiseSuppressionStage] = (
+            NoiseSuppressionStage(sample_rate, noise_suppression) if noise_suppression is not None else None
+        )
 
         self._input_queue: queue.Queue[Any] = queue.Queue(maxsize=max_queue_size)
         self._accumulator: list[np.ndarray] = []
         self._accumulated_samples: int = 0
         self._accum_lock = threading.Lock()
         self._chunk_first_sample_t: Optional[float] = None
+        self._chunk_seq = 0
 
-        self.input_stream = AudioInputStream(
+        self.input_stream = input_stream if input_stream is not None else AudioInputStream(
             device_id=self.input_device_id,
             sample_rate=self.sample_rate,
             block_size=2048,
             channels=1,
         )
-        self.output_stream = AudioOutputStream(
+        self.output_stream = output_stream if output_stream is not None else AudioOutputStream(
             device_id=self.output_device_id,
             sample_rate=self.sample_rate,
             channels=2,
@@ -179,12 +270,84 @@ class RealTimeVoiceChangerPipeline:
 
         self._running = False
         self._worker_thread: Optional[threading.Thread] = None
+        self._worker_stuck = False
 
         self.metrics = PipelineMetrics()
 
     @property
     def is_running(self) -> bool:
         return self._running
+
+    @property
+    def worker_stuck(self) -> bool:
+        """True if the last stop() returned while the worker was still inside an inference call."""
+        return self._worker_stuck and self._worker_thread is not None and self._worker_thread.is_alive()
+
+    def wait_for_worker(self, timeout: float) -> bool:
+        """Wait for a worker left running by stop() (see worker_stuck). True when no worker is running."""
+        thread = self._worker_thread
+        if thread is not None and not self._running:
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                return False
+            self._worker_thread = None
+        return self._worker_thread is None or self._running
+
+    def update_config(self, config: ConversionConfig) -> None:
+        """Replace the conversion settings; takes effect from the next chunk.
+
+        The worker reads `self.config` once per chunk and the reference is replaced atomically, so a
+        chunk never sees a half-updated config. The caller must not mutate `config` afterwards.
+        """
+        self.config = config
+
+    def update_noise_suppression(self, settings: NoiseSuppressionSettings) -> None:
+        """Change noise suppression; applied from the next chunk with a short ramp.
+
+        Raises:
+            RuntimeError: the pipeline was built without a noise suppression stage.
+            ValueError: invalid settings.
+        """
+        if self._noise_stage is None:
+            raise RuntimeError("pipeline was created without a noise suppression stage")
+        self._noise_stage.update(settings)
+
+    def health(self) -> list[str]:
+        """Problems detected while running (empty list if healthy, or if stopped).
+
+        Detects a stream that stopped on its own (device unplugged, driver error) and a worker
+        thread that died. Cheap; safe to poll from another thread.
+        """
+        if not self._running:
+            return []
+        problems = []
+        if not self.input_stream.is_active:
+            problems.append("input audio stream is no longer active (device disconnected or driver error)")
+        if not self.output_stream.is_active:
+            problems.append("output audio stream is no longer active (device disconnected or driver error)")
+        if self._worker_thread is None or not self._worker_thread.is_alive():
+            problems.append("inference worker thread is not running")
+        return problems
+
+    def refresh_stream_counters(self) -> None:
+        """Copy the audio streams' event counters into `metrics` (called on stop and on demand)."""
+        self.metrics.input_overflow_count = self.input_stream.overflow_count
+        self.metrics.input_status_flags = getattr(self.input_stream, "status_flag_count", 0)
+        self.metrics.output_underflow_count = self.output_stream.underflow_count
+        self.metrics.startup_underflow_count = self.output_stream.startup_underflow_count
+        self.metrics.steady_underflow_count = self.output_stream.steady_underflow_count
+        self.metrics.shutdown_underflow_count = self.output_stream.shutdown_underflow_count
+        self.metrics.output_overflow_count = self.output_stream.overflow_count
+        self.metrics.output_status_flags = getattr(self.output_stream, "status_flag_count", 0)
+        stage = self._noise_stage
+        if stage is not None:
+            settings = stage.settings
+            self.metrics.noise_suppression_enabled = settings.enabled
+            self.metrics.noise_suppression_mode = settings.mode
+            self.metrics.noise_suppression_active = stage.active
+            self.metrics.noise_suppression_failed = stage.failed
+            self.metrics.noise_suppression_errors = stage.errors
+            self.metrics.noise_suppression_last_error = stage.last_error
 
     def _on_audio_input(self, block: np.ndarray) -> None:
         """Lightweight non-blocking callback invoked by the input audio thread."""
@@ -213,22 +376,26 @@ class RealTimeVoiceChangerPipeline:
                 self._chunk_first_sample_t = time.perf_counter() if len(remainder) > 0 else None
 
                 self.metrics.total_chunks_captured += 1
-                item = (ready_chunk, t_first, t_ready)
+                self._chunk_seq += 1
+                item = (ready_chunk, t_first, t_ready, self._chunk_seq)
 
+                # Overload policy: drop the OLDEST queued chunk so latency stays bounded. Every drop
+                # is counted in metrics.total_chunks_dropped. No logging here: this is the audio thread.
                 try:
                     self._input_queue.put_nowait(item)
                 except queue.Full:
                     try:
                         _ = self._input_queue.get_nowait()
+                        self._input_queue.task_done()
                         self.metrics.total_chunks_dropped += 1
                         self._input_queue.put_nowait(item)
-                        logger.warning("Input queue backlog: dropped oldest chunk to preserve real-time latency")
-                    except Exception:
-                        pass
+                    except (queue.Empty, queue.Full):
+                        self.metrics.total_chunks_dropped += 1
 
     def _worker_loop(self) -> None:
         """Background thread executing neural model inference."""
         logger.info("Real-time inference worker thread started.")
+        last_seq: Optional[int] = None
         while self._running:
             try:
                 item = self._input_queue.get(timeout=0.1)
@@ -236,7 +403,10 @@ class RealTimeVoiceChangerPipeline:
                 continue
 
             try:
-                if isinstance(item, tuple) and len(item) == 3:
+                seq: Optional[int] = None
+                if isinstance(item, tuple) and len(item) == 4:
+                    chunk, t_first, t_ready, seq = item
+                elif isinstance(item, tuple) and len(item) == 3:
                     chunk, t_first, t_ready = item
                 else:
                     chunk = item
@@ -247,29 +417,44 @@ class RealTimeVoiceChangerPipeline:
                 self.metrics.queue_wait_times_ms.append(queue_wait_ms)
 
                 chunk_arr = np.asarray(chunk, dtype=np.float32)
+                # A dropped chunk breaks the timeline: context or a held tail from before the gap must
+                # not be blended into the audio after it.
+                if seq is not None and last_seq is not None and seq != last_seq + 1:
+                    self._stitcher.reset()
+                    self.metrics.stitch_resets += 1
+                    if self._noise_stage is not None:
+                        self._noise_stage.reset(keep_noise_estimate=True)
+                last_seq = seq
+                if self._noise_stage is not None:
+                    t_ns = time.perf_counter()
+                    chunk_arr = self._noise_stage.process(chunk_arr)
+                    self.metrics.noise_suppression_times_ms.append((time.perf_counter() - t_ns) * 1000.0)
+                model_in = self._stitcher.model_input(chunk_arr)
 
                 t0 = time.perf_counter()
                 if hasattr(self.converter, "convert_chunk"):
                     converted = self.converter.convert_chunk(
-                        chunk_arr,
+                        model_in,
                         config=self.config,
                         input_sr=self.sample_rate,
                         target_sr=self.sample_rate,
                     )
                 else:
-                    raw_bytes = chunk_arr.tobytes()
+                    raw_bytes = model_in.tobytes()
                     out_bytes = self.converter.convert(raw_bytes, self.config)
                     converted = np.frombuffer(out_bytes, dtype=np.float32)
 
                 infer_duration_ms = (time.perf_counter() - t0) * 1000.0
                 self.metrics.inference_times_ms.append(infer_duration_ms)
                 self.metrics.total_chunks_converted += 1
+                self.metrics.consecutive_inference_errors = 0
 
-                if self.chunk_samples > 0:
-                    self.metrics.expected_chunk_samples = self.chunk_samples
-                    self.metrics.last_converted_chunk_samples = len(converted)
-                    if len(converted) != self.chunk_samples:
-                        self.metrics.sample_count_mismatches += 1
+                # Length check is on the raw converter output; join() then emits exactly one chunk.
+                self.metrics.expected_chunk_samples = len(model_in)
+                self.metrics.last_converted_chunk_samples = len(converted)
+                if len(converted) != len(model_in):
+                    self.metrics.sample_count_mismatches += 1
+                converted = self._stitcher.join(converted)
 
                 self.output_stream.write_chunk(converted)
                 t_written = time.perf_counter()
@@ -283,8 +468,13 @@ class RealTimeVoiceChangerPipeline:
                 self.metrics.output_buffer_occupancy_ms.append(self.output_stream.buffered_seconds * 1000.0)
 
             except Exception as err:
+                # The chunk is lost; the output buffer covers the gap or underflows (counted).
+                self._stitcher.reset()
+                self.metrics.stitch_resets += 1
                 self.metrics.inference_errors += 1
-                logger.error("Error during real-time chunk conversion: %s", err)
+                self.metrics.consecutive_inference_errors += 1
+                self.metrics.last_inference_error = f"{type(err).__name__}: {err}"
+                logger.error("Error during real-time chunk conversion: %s", err, exc_info=True)
             finally:
                 self._input_queue.task_done()
 
@@ -295,22 +485,49 @@ class RealTimeVoiceChangerPipeline:
         if self._running:
             return
 
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            raise RuntimeError("previous inference worker is still finishing a chunk; retry start() shortly")
+
         logger.info("Starting real-time voice changer pipeline...")
         self.metrics = PipelineMetrics()
         self.metrics.start_time = time.perf_counter()
+        ns_latency = self._noise_stage.latency_samples if self._noise_stage is not None else 0
+        self.metrics.noise_suppression_latency_ms = ns_latency / self.sample_rate * 1000.0
+        self.metrics.algorithmic_delay_ms = (self._stitcher.nominal_delay_samples + ns_latency) / self.sample_rate * 1000.0
+        self._stitcher.reset()
+        if self._noise_stage is not None:
+            self._noise_stage.reset()
 
         with self._accum_lock:
             self._accumulator = []
             self._accumulated_samples = 0
             self._chunk_first_sample_t = None
+            self._chunk_seq = 0
+        # Chunks left from a previous session must not be played in this one.
+        while True:
+            try:
+                self._input_queue.get_nowait()
+                self._input_queue.task_done()
+            except queue.Empty:
+                break
+        self._worker_stuck = False
 
-        self.output_stream.start()
-
-        self._running = True
-        self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True, name="RVCInferenceWorker")
-        self._worker_thread.start()
-
-        self.input_stream.start(self._on_audio_input)
+        # Roll back whatever already started if a later step fails (e.g. invalid input device).
+        try:
+            self.output_stream.start()
+            self._running = True
+            self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True, name="RVCInferenceWorker")
+            self._worker_thread.start()
+            self.input_stream.start(self._on_audio_input)
+        except BaseException:
+            self._running = False
+            self.input_stream.stop()
+            self.output_stream.stop()
+            if self._worker_thread is not None:
+                self._worker_thread.join(timeout=2.0)
+                self._worker_thread = None
+            self.metrics.end_time = time.perf_counter()
+            raise
         logger.info("Pipeline started successfully.")
 
     def stop(self) -> None:
@@ -324,16 +541,17 @@ class RealTimeVoiceChangerPipeline:
         self.output_stream.prepare_shutdown()
 
         self._running = False
-        if self._worker_thread is not None and self._worker_thread.is_alive():
+        if self._worker_thread is not None:
             self._worker_thread.join(timeout=2.0)
-            self._worker_thread = None
+            if self._worker_thread.is_alive():
+                # A chunk is still in inference; the thread exits after it. start() refuses until then.
+                self._worker_stuck = True
+                logger.error("Inference worker did not finish within 2 s of stop().")
+            else:
+                self._worker_thread = None
 
         self.output_stream.stop()
 
         self.metrics.end_time = time.perf_counter()
-        self.metrics.input_overflow_count = self.input_stream.overflow_count
-        self.metrics.output_underflow_count = self.output_stream.underflow_count
-        self.metrics.startup_underflow_count = self.output_stream.startup_underflow_count
-        self.metrics.steady_underflow_count = self.output_stream.steady_underflow_count
-        self.metrics.shutdown_underflow_count = self.output_stream.shutdown_underflow_count
-        logger.info("Pipeline stopped cleanly.")
+        self.refresh_stream_counters()
+        logger.info("Pipeline stopped%s.", " (worker still finishing a chunk)" if self._worker_stuck else "")

@@ -85,10 +85,52 @@ For 3.0-second target slices (`self.per = 3.0`), adjacent slices share **300 ms 
 3. **Partition Locations & Workflow Rule**:
    - Held-out audio is saved directly to `data/held_out_test/`.
    - Dedicated training audio is placed into `data/dataset_raw/`.
-   - `preprocess.py` is pointed exclusively at `../../data/dataset_raw`. The held-out subset is never exposed to slicing, feature extraction, or model training.
+   - `preprocess.py` is pointed exclusively at the training directory of the dataset version assigned to the experiment (section 2.4). It is never pointed at `data/held_out_test/`. The held-out subset is never exposed to slicing, feature extraction, or model training.
    - *Constraint*: Do not create, move, or split any audio files during this planning task.
 4. **Generalization Caveat**:
    - A short held-out segment taken from the same continuous recording session provides an internal sanity check for reconstruction and vowel clarity, **not evidence of generalizability** to new microphones, different room acoustics, varied emotional registers, or unconstrained conversational environments.
+
+### 2.4 Dataset Versions and Experiment Assignment
+
+The original split files are never modified. A dataset change creates a new directory with its own manifest that records its parent.
+
+| Version | Training audio | Format | Peak | SHA-256 | Manifest |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `split_v1` (original) | `data/dataset_raw/female_train_source.wav` | 44.1 kHz, stereo, PCM_16, 253.58 s | 0.990845 (**fails** the < 0.90 rule) | `a13254f6…f09c853` | `data/source_audio/dataset_split_manifest.json` |
+| `train_peak0p88` (derived from `split_v1`) | `data/dataset_train_peak0p88/female_train_source_peak0p88.wav` | 44.1 kHz, stereo, FLOAT32, 253.58 s | 0.880000 | `475af7f9…5e0bdf3` | `data/dataset_train_peak0p88/derived_manifest.json` |
+| Held-out (shared, unchanged) | `data/held_out_test/female_holdout.wav` | 44.1 kHz, stereo, PCM_16, 34.81 s | 0.806 | `d025cd8d…fdf9129` | `data/source_audio/dataset_split_manifest.json` |
+
+**`train_peak0p88` derivation (2026-10-21):**
+- Created by `scripts/derive_gain_dataset.py`.
+- Processing is a single linear gain: `float32(int16 / 32768 × 0.8881310829)`, which is −1.0305 dB. No clipping, limiting, resampling or channel mixing is applied.
+- The gain comes from the measured source peak: 0.88 / (32468 / 32768).
+- FLOAT32 storage avoids requantization. Because of that, `scripts/verify_dataset_manifest.py --derived <manifest>` can prove the derived file is sample-exact `input × gain`. It also re-verifies the full parent manifest first: 57/57 checks PASS.
+- The derived manifest records:
+  - the parent manifest SHA-256;
+  - input and output SHA-256;
+  - gain;
+  - audio parameters;
+  - tool versions (Python 3.11.9, NumPy 2.4.6, soundfile 0.14.0, libsndfile 1.2.2);
+  - the owner's confirmation of speaker consent and of the listening check (2026-10-21).
+- The training-only held-out audio is not derived; evaluation uses the original held-out file.
+
+**Peaks along the Applio preprocess path** (`scripts/check_preprocess_peaks.py`, run with `rvc-train`, in memory) `[Measured]`:
+
+| Stage | `split_v1` | `train_peak0p88` |
+| :--- | :--- | :--- |
+| Input file | 0.990845 | 0.880000 |
+| `load_audio` mono @ 40 kHz | 0.992669 | 0.881620 |
+| Slices @ 40 kHz | 0.992669 (106 slices) | 0.881620 (105 slices) |
+| Slices @ 16 kHz (RMVPE/ContentVec input) | **1.004252** | 0.891908 |
+
+Downmixing and resampling overshoot the input peak by up to +1.35 % at 16 kHz. That leaves `train_peak0p88` 0.008 below the limit. A higher target peak would not keep that margin.
+
+The Slicer threshold (−42 dB) is absolute, so the −1.03 dB gain also changes slicing. `train_peak0p88` keeps 243.455 s instead of 244.880 s (−1.425 s, mostly quiet chunk edges in 5 of 55 chunks), which gives 105 slices instead of 106.
+
+| Experiment | Dataset version | Status |
+| :--- | :--- | :--- |
+| `nvf_smoke_v0` | `split_v1` (one-time peak-rule exception, pipeline check only, ≤ 3 epochs) | Done 2026-10-21 |
+| `nvf_short_v1` | `train_peak0p88` | Not run |
 
 ---
 
@@ -475,7 +517,15 @@ Download official Applio v2 base checkpoints into:
 
 ```powershell
 .venv\Scripts\python scripts/validate_dataset.py --dataset-dir data/dataset_raw
+.venv\Scripts\python scripts/verify_dataset_manifest.py
+
+# Derived dataset used by nvf_short_v1 (section 2.4)
+.venv\Scripts\python scripts/validate_dataset.py --dataset-dir data/dataset_train_peak0p88
+.venv\Scripts\python scripts/verify_dataset_manifest.py --derived data/dataset_train_peak0p88/derived_manifest.json
+C:\Users\quach\venvs\rvc-train\Scripts\python scripts/check_preprocess_peaks.py data/dataset_train_peak0p88/female_train_source_peak0p88.wav
 ```
+
+`verify_dataset_manifest.py` is read-only. It checks `data/source_audio/dataset_split_manifest.json` against the files on disk (SHA-256, size, sample rate, channels, format, frame counts, non-overlapping intervals, separate train/held-out directories, sample-exact copies of the source intervals) and exits non-zero on any failure. Do not preprocess if it fails.
 
 ---
 
@@ -483,7 +533,7 @@ Download official Applio v2 base checkpoints into:
 
 ```powershell
 Push-Location third_party/applio
-..\..\.venv\Scripts\python rvc/train/preprocess/preprocess.py `
+C:\Users\quach\venvs\rvc-train\Scripts\python rvc/train/preprocess/preprocess.py `
     "logs/nvf_smoke_v0" `
     "../../data/dataset_raw" `
     40000 `
@@ -510,7 +560,7 @@ Pop-Location
 
 ```powershell
 Push-Location third_party/applio
-..\..\.venv\Scripts\python rvc/train/extract/extract.py `
+C:\Users\quach\venvs\rvc-train\Scripts\python rvc/train/extract/extract.py `
     "logs/nvf_smoke_v0" `
     "rmvpe" `
     128 `
@@ -546,9 +596,11 @@ if (-not $cfg.train.fp16_run) {
 
 # Explicitly isolate GPU 0
 $env:CUDA_VISIBLE_DEVICES = "0"
+# Windows PyTorch builds lack libuv; without this, DDP init_process_group fails
+$env:USE_LIBUV = "0"
 
 Push-Location third_party/applio
-..\..\.venv\Scripts\python rvc/train/train.py `
+C:\Users\quach\venvs\rvc-train\Scripts\python rvc/train/train.py `
     "nvf_smoke_v0" `
     1 `
     3 `
@@ -567,6 +619,9 @@ Push-Location third_party/applio
     False
 Pop-Location
 ```
+> [!WARNING]
+> **Exit code is not a success signal**: `train.py` runs training in a child process, and the parent returned exit code 0 even when the child crashed in `dist.init_process_group` (`use_libuv was requested but PyTorch was build without libuv support`, observed 2026-10-21 before `USE_LIBUV=0` was set). Confirm success from the log (`Saved model ... (epoch N)` for every epoch) and from the exported `<model>_<N>e_<step>s.pth` files.
+
 *Argument Breakdown (Smoke Test)*:
 - `"nvf_smoke_v0"`: Dedicated experiment name (`sys.argv[1]`).
 - `1`: `save_every_epoch` (exercises checkpointing and inference extraction on every epoch, `sys.argv[2]`).
@@ -589,10 +644,29 @@ Pop-Location
 
 ```powershell
 Push-Location third_party/applio
-..\..\.venv\Scripts\python rvc/train/process/extract_index.py `
+C:\Users\quach\venvs\rvc-train\Scripts\python rvc/train/process/extract_index.py `
     "logs/nvf_smoke_v0" "v2" "Auto"
 Pop-Location
 ```
+
+### Recorded Run: `nvf_smoke_v0` (2026-10-21, pipeline check only)
+
+Logs, VRAM samples, package freeze and the inference sample are in `output/nvf_smoke_v0_2026-10-21/`. The run used the Step 2A–5A commands with `rvc-train` and `USE_LIBUV=0`.
+
+| Step | Result `[Measured]` |
+| :--- | :--- |
+| Input | `data/dataset_raw/female_train_source.wav` (manifest-verified, 44.1 kHz stereo PCM_16, 253.58 s, peak 0.9908, 0 full-scale samples, 0 flat-top runs) |
+| 2A preprocess | 8.7 s; `load_audio` downmixes to mono and resamples to 40 kHz; no peak normalization (`process_effects=False`); 106 float32 slices (0.43–3.24 s), 40 kHz peak 0.9927 |
+| 3A extract | 38 s; 106/106 f0, f0_voiced, v2 features; no errors or NaN; peak VRAM used 1315 MiB; `fp16_run: true` |
+| 4A train (3 epochs, batch 1) | 486 s (~2.5 min/epoch); peak VRAM used 3201 MiB of 4096 (whole GPU, including ~620 MiB desktop baseline); loss_g 20.76 → 14.87, loss_d 4.34 → 5.47 (epochs 1–2 in `training_data.json`) |
+| Exports | `nvf_smoke_v0_{1e_108s,2e_216s,3e_324s}.pth`, `nvf_smoke_v0_3e_324s_best_epoch.pth` (~55 MB, FP16); section 3.6 key validation PASS on all four (103 missing keys, all `enc_q.*`; 0 unexpected, 0 shape mismatch, 0 non-finite) |
+| 5A index | `added_nvf_smoke_v0_v2.index`, IVFFlat, d=768, 12,920 vectors |
+| Adapter inference (`.venv`) | `scripts/offline_conversion_test.py --language vi` on `tests/fixtures/input_male.wav`: RTF 0.351, 40 kHz mono, no clipping, no silence |
+
+Limitations:
+- The dataset peak (0.9908) does not meet the < 0.90 rule in section 2.2. The user accepted this exception only for `nvf_smoke_v0` (≤ 3 epochs). It does not apply to `nvf_short_v1` or later runs.
+- Three epochs on 4 minutes of audio do not show anything about voice quality. Nobody has listened to the output.
+- The first launch failed on libuv. That failed run left two empty TensorBoard event files and a `process_pids` field in `config.json`, but no G/D checkpoints.
 
 ---
 
@@ -605,9 +679,9 @@ Pop-Location
 
 ```powershell
 Push-Location third_party/applio
-..\..\.venv\Scripts\python rvc/train/preprocess/preprocess.py `
+C:\Users\quach\venvs\rvc-train\Scripts\python rvc/train/preprocess/preprocess.py `
     "logs/nvf_short_v1" `
-    "../../data/dataset_raw" `
+    "../../data/dataset_train_peak0p88" `
     40000 `
     3.0 `
     none `
@@ -622,7 +696,7 @@ Pop-Location
 
 ```powershell
 Push-Location third_party/applio
-..\..\.venv\Scripts\python rvc/train/extract/extract.py `
+C:\Users\quach\venvs\rvc-train\Scripts\python rvc/train/extract/extract.py `
     "logs/nvf_short_v1" `
     "rmvpe" `
     128 `
@@ -646,9 +720,11 @@ if (-not $cfg.train.fp16_run) {
 
 # Explicitly isolate GPU 0
 $env:CUDA_VISIBLE_DEVICES = "0"
+# Windows PyTorch builds lack libuv; without this, DDP init_process_group fails
+$env:USE_LIBUV = "0"
 
 Push-Location third_party/applio
-..\..\.venv\Scripts\python rvc/train/train.py `
+C:\Users\quach\venvs\rvc-train\Scripts\python rvc/train/train.py `
     "nvf_short_v1" `
     25 `
     100 `
@@ -692,10 +768,91 @@ Pop-Location
 
 ```powershell
 Push-Location third_party/applio
-..\..\.venv\Scripts\python rvc/train/process/extract_index.py `
+C:\Users\quach\venvs\rvc-train\Scripts\python rvc/train/process/extract_index.py `
     "logs/nvf_short_v1" "v2" "Auto"
 Pop-Location
 ```
+
+### Recorded Run: `nvf_short_v1` (2026-10-21, short experiment)
+
+Launcher, logs, VRAM samples, evaluation outputs and metrics are in `output/nvf_short_v1_2026-10-21/` (`run_4b_train.sh`, `4b_train.log`, `4b_vram_samples.csv`, `5b_index.log`, `run_eval.sh`, `eval/`). The run used the Step 2B–5B commands with `rvc-train` and `USE_LIBUV=0`. The owner confirmed voice-use consent and a listening check of the training audio before launch.
+
+| Step | Result `[Measured]` |
+| :--- | :--- |
+| Input | `data/dataset_train_peak0p88/female_train_source_peak0p88.wav` (derived, gain 0.8881, peak 0.8800; `--derived` manifest check PASS) |
+| 2B preprocess | 105 slices; peak 0.8816 (40 kHz), 0.8919 (16 kHz) |
+| 4B train (100 epochs, batch 1) | Completed 100/100 epochs, 10,700 steps (`Training has been successfully completed` in log; overtraining detector never triggered). Wall time 11:15:00–15:45:59 including a ~36 min laptop sleep (12:59–13:35); ~2:20 per epoch, ~3 h 55 min of actual training. Peak GPU memory 3340 MiB of 4096 (whole GPU); watchdog never fired. Smoothed loss_gen 15.39 (e25) → 13.17 (e50) → 11.26 (e75) → 9.74 (e100); loss_disc ~4.4 → 4.09. No error/traceback/NaN in the log |
+| Exports | `nvf_short_v1_{25e_2675s,50e_5350s,75e_8025s,100e_10700s}.pth` and `nvf_short_v1_100e_10700s_best_epoch.pth`; section 3.6 key validation PASS on all five |
+| 5B index | `added_nvf_short_v1_v2.index`, IVFFlat, d=768, 12,835 vectors |
+
+Offline evaluation (`.venv`, `scripts/offline_conversion_test.py --language vi`, index above; baseline `vctk_female_p231`). Metrics from `analyze_conversions.py` (RMVPE F0); these are objective proxies, not a quality judgement:
+
+| Input | Model | RTF | f0_corr_st | median shift (st) | octave err % | voiced recall % | peak |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| holdout, pitch 0 | e25 | 0.303 | 0.997 | 0.00 | 0.00 | 98.9 | 0.629 |
+| | e50 | 0.301 | 0.997 | 0.00 | 0.00 | 99.0 | 0.860 |
+| | e75 | 0.304 | 0.998 | 0.01 | 0.00 | 98.7 | 0.898 |
+| | e100 | 0.302 | 0.988 | -0.01 | 0.18 | 98.5 | 0.803 |
+| | baseline | 0.309 | 0.994 | 0.01 | 0.04 | 97.4 | 0.809 |
+| `input_male`, pitch +12 | e25 | 0.306 | 0.982 | 11.99 | 0.10 | 99.0 | 0.599 |
+| | e50 | 0.307 | 0.981 | 11.99 | 0.10 | 98.8 | 0.870 |
+| | e75 | 0.307 | 0.982 | 12.01 | 0.11 | 98.1 | 0.863 |
+| | e100 | 0.307 | 0.980 | 11.98 | 0.11 | 98.1 | 0.816 |
+| | baseline | 0.313 | 0.989 | 12.02 | 0.05 | 98.1 | 0.695 |
+
+No output clipped or went silent; dropout (output < -50 dBFS on input-voiced frames) was 0.41–0.78 % for all outputs.
+
+Limitations:
+- Nobody has listened to these outputs. F0 correlation measures contour tracking, not timbre, naturalness or how close the result is to the target speaker. The owner needs to listen and choose a checkpoint.
+- The holdout is recorded by the target speaker, so pitch-0 conversion is close to reconstruction and favours every model. On `input_male`, the custom checkpoints scored slightly lower f0_corr than the vctk baseline (0.980–0.982 vs 0.989). The audit below shows this gap is within run-to-run sampling noise, so it does not rank the models.
+- `_best_epoch` is Applio's own pick (epoch 100 here); the lowest single-step loss_gen was at epoch 93, which was not exported.
+- Only one male input clip was tested.
+
+Owner listening (2026-10-21): `baseline_male` sounds robotic; e25/e50/e75 sound nearly the same; e100 sounds less natural. No checkpoint is accepted. `e50` is a temporary preview checkpoint only.
+
+### Inference Audit: `nvf_short_v1` (2026-10-21)
+
+Outputs, configs and scripts are in `output/nvf_short_v1_audit_2026-10-21/` (see its `README.md` for the listening order). All runs use `tests/fixtures/input_male.wav` and `RVCAdapter.convert_file`, starting from the `vi` profile (pitch +12, rmvpe, index_rate 0.50, filter_radius 2, protect 0.40, hop 128), with torch seeded before each conversion and one parameter changed at a time. `[Measured]`:
+
+- The original `eval/` comparison was valid. Every model ran through the same script and profile. The only differences were the model file and its index: the custom index for the custom models, and the VCTK index for the baseline. Each old `eval/*_male.wav` is closest to a new seeded output of the same model (log-mel distance 1.8–2.6 dB vs ≥ 3.5 dB to other models), so no file was mixed up or reused.
+- The checkpoints really differ. Weight rel-L2 from pretrained is 0.058 (e25), 0.081 (e50), 0.099 (e75) and 0.114 (e100); between neighbouring exports it is 0.046–0.049. `_best_epoch` is bit-identical in weights to e100.
+- Output differences between e25/e50/e75/e100 are small: 3.1–3.7 dB log-mel, against a same-model seed-to-seed noise floor of 1.8–2.3 dB. Custom-vs-baseline is 6.7–7.3 dB. This matches the owner hearing e25–e75 as nearly the same.
+- RVC inference is stochastic (`torch.randn_like` in `synthesizers.py` infer). Unseeded f0_corr moved by up to 0.01 between runs: e100 scored 0.980 in `eval/` and 0.992 seeded. f0_corr differences below this do not rank models.
+- index_rate 0–0.75 and protect 0.40 vs 0.50 change the output by 0.5–2.5 dB, about the same as the seed noise floor, for both e50 and the baseline. index_rate 0 is bit-identical to loading no index. protect ≥ 0.5 disables protection in Applio (`pipeline.py`, `if protect < 0.5`).
+- Crude timbre proxy (MFCC-mean distance to the holdout speaker; unconverted input is 117): custom models 20–29, baseline 65–68. Lower pitch moves e50 further from the target (+10: 37, +8: 48). The input median F0 is 132 Hz and the holdout median is 279 Hz; +12 gives about 264 Hz.
+- No clipping or silence. Durations were 32.20 s for every output. RTF was 0.23–0.32 (includes the first-run warm-up).
+
+The `vi` profile lowers index_rate to 0.50 because the VCTK index is English. That reason does not apply to the Vietnamese `nvf_short_v1` index. The audit did not change the default.
+
+### Speaker B Dataset (2026-10-21, prepared, not trained)
+
+Speaker B is a separate dataset. Never mix it with speaker A. The owner confirmed consent verbally on 2026-10-21; no consent document is stored in the repository. The owner states the speech is mainly English. The goal is to borrow B's timbre for Vietnamese male input, not to reproduce a native Northern Vietnamese voice.
+
+- Manifest `data/speaker_b/dataset_split_manifest.json` (verify with `scripts/verify_dataset_manifest.py --manifest ...`: 39/39 PASS). Train `data/speaker_b/dataset_raw/speaker_b_train.wav` covers 0–177.52 s. A 0.40 s guard pause follows. Holdout `data/speaker_b/held_out_test/speaker_b_holdout.wav` covers 177.92–205.10 s. Both are sample-exact PCM_16 48 kHz mono copies.
+- The source WAV is a decode of a 128 kbps MP3 (`output/speaker_b_inspection_2026-10-21/inspection.txt`).
+- No gain change: peak 0.279 at every preprocess stage (file, 40 kHz, slices, 16 kHz). Planned preprocess: 40 kHz, `per` 3.0, `process_effects=False`, no noise reduction. Expected 77 train slices.
+- Train has 117 s of active speech and 120 s RMVPE-voiced; F0 median 331 Hz (p5–p95 261–418 Hz). Holdout has 17 s active.
+- Preparation scripts and results: `output/speaker_b_prep_2026-10-21/`.
+
+### Recorded Run: `spkb_preview_v2` (2026-10-21, speaker B preview, 25 epochs)
+
+`spkb_preview_v1` crashed in epoch 8 because an external cleanup deleted `sliced_audios` (see `output/spkb_preview_v1_2026-10-21/INCIDENT_2026-10-21_file_deletion.md`). `spkb_preview_v2` is a fresh run from pretrained f0G40k/f0D40k with new preprocess and extract. Files are in `output/spkb_preview_v2_2026-10-21/`.
+
+Cache protection, used for this run and reusable for later ones:
+- `.training_active/<exp>.json` lock, plus the `GEMINI.md` cleanup rules.
+- `cache_guard.py snapshot` covers 392 required files with SHA-256: the cache, `filelist.txt`, the referenced mute files and the pretrained G/D.
+- `cache_guard.py protect` sets read-only on the 386 cache files the experiment owns and records the list in `readonly_files.txt`. `unprotect` restores only those files. Read-only blocks Python `shutil.rmtree`/`os.remove` and `Remove-Item` without `-Force`. It does not block `Remove-Item -Force` or `rm -rf`.
+- `run_train.sh` checks activity and cache integrity before launch. Every 10 s it runs a cache quick-check, stopping training and logging the missing files and the last epoch; it also warns about cleanup-like processes. The VRAM watchdog is unchanged.
+- The cache watchdog was dry-run on a fake experiment: a deleted slice was detected and the fake trainer was stopped within 4 s.
+
+| Step | Result `[Measured]` |
+| :--- | :--- |
+| Preprocess / extract | 77 slices; 77/77 f0, f0_voiced and v2 features consistent (f0 length − 2 × feature length = 1–3, same as `nvf_short_v1`); f0 identical to `spkb_preview_v1`; extract peak VRAM 1552 MiB |
+| Train (25 epochs, batch 1, save/export every 5) | 17:35:53–18:20:59, 1975 steps, about 1:46 per epoch. Peak GPU memory 3536 MiB. No watchdog alarm. Smoothed loss_gen 15.93 (e2) → 15.69 (e5) → 15.20 (e10) → 14.65 (e15) → 14.12 (e20) → 13.63 (e25); loss_disc about 4.2 |
+| Exports | `spkb_preview_v2_{5e_395s,10e_790s,15e_1185s,20e_1580s,25e_1975s}.pth` and `_25e_1975s_best_epoch.pth`; key validation PASS on all six |
+| Integrity | Cache verify after training 392/392 unchanged (training added 77 `.spec.pt`, as Applio does); 948/948 baseline hashes unchanged (data A/B, manifests, models, all other experiments' checkpoints and indexes, evaluation WAVs) |
+
+No index has been built and no evaluation has been run yet. Loss values say nothing about voice quality.
 
 ---
 
@@ -719,7 +876,7 @@ Pop-Location
 - **Python Baseline**: **Python 3.11** is the documented project baseline. In `pyproject.toml`, `requires-python = ">=3.10,<3.12"` explicitly excludes unverified Python 3.12+ environments.
 - **NumPy Baseline**: **NumPy 1.x** is the intended training baseline, with **NumPy 1.26.4** as the initial verification target. The package manifest maintains `numpy>=1.23,<2.0`.
   > [!IMPORTANT]
-  > **Existing Environment Status**: The currently existing local virtual environment (`.venv`) runs Python 3.11 with **NumPy 2.4.6** (installed prior to Milestone 4B). While previously reported unit tests passed, this existing environment **has not yet passed a training-path runtime test under the intended NumPy version (1.26.4)**. NumPy 2.x support on the Applio training path is unverified.
+  > **Environment Split (verified 2026-10-21)**: Training runs only in the dedicated environment `C:\Users\quach\venvs\rvc-train` (Python 3.11.9, NumPy 1.26.4, Matplotlib 3.7.2, PyTorch 2.5.1+cu121). The inference environment `.venv` keeps NumPy 2.4.6 / Matplotlib 3.11.2 and must not be used for training: `scripts/check_training_env.py` fails there on the Matplotlib logger check.
 - **Module-Level Training Imports**: `pydub>=0.25.0` and `wget>=3.2` are required in `[project.optional-dependencies] train` because both are imported at module level in `third_party/applio/rvc/lib/utils.py` (`from pydub import AudioSegment` and `import wget`), which is loaded on the preprocessing and extraction paths whenever `preprocess.py` or `extract.py` imports `load_audio` or `load_embedding` (rather than being imported directly by `preprocess.py`). `stftpitchshift` is excluded from training extras because it is imported lazily for inference only.
 - **Matplotlib Compatibility Constraint (`matplotlib==3.7.2`) & NumPy Relationship**:
   - In `third_party/applio/rvc/train/utils.py` (line 188), the training logging function `plot_spectrogram_to_numpy()` converts Matplotlib figures to raw RGB byte buffers via:
@@ -727,39 +884,40 @@ Pop-Location
     data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
     ```
   - In `train.py` (lines 701–728), `plot_spectrogram_to_numpy()` is called on **every epoch** to generate three spectrogram images (`slice/mel_org`, `slice/mel_gen`, `all/mel`) for TensorBoard event logging.
-  - **Compatibility Break**: `fig.canvas.tostring_rgb()` was deprecated in Matplotlib 3.8 and removed in Matplotlib 3.10 (in favor of `fig.canvas.buffer_rgba()`). The currently active development environment was previously reported as having Matplotlib 3.11.2, which is expected to fail with an `AttributeError` on epoch 1 of training (inferred from source code inspection and installed package metadata, not observed in a training run).
-  - **Dependency Pin & Baseline Alignment**: To ensure reproducible compatibility with Applio's unpatched training logger, `pyproject.toml` pins `matplotlib==3.7.2` (matching Applio's pinned upstream `requirements.txt`). This pin is specifically intended for the declared NumPy 1.x baseline (`numpy>=1.23,<2.0`, with 1.26.4 as the planned verification target).
-  - **Environment Status & Disclaimers**: The active environment was previously reported as running NumPy 2.4.6 and Matplotlib 3.11.2, and neither the dependency change nor logger compatibility has yet been runtime-tested there. Updating the dependency declaration in `pyproject.toml` does not modify the active virtual environment or prove runtime compatibility. The `matplotlib==3.7.2` pin should be validated together with NumPy < 2.0 in the intended training environment.
-  - **Smoke-Test Blocker**: Execution of the Phase 1 smoke test (`nvf_smoke_v0`) **remains strictly blocked** until the training logger / Matplotlib compatibility is verified and resolved in the runtime environment.
+  - **Compatibility Break**: `fig.canvas.tostring_rgb()` was deprecated in Matplotlib 3.8 and removed in Matplotlib 3.10 (in favor of `fig.canvas.buffer_rgba()`). In `.venv` (Matplotlib 3.11.2) the call raises `AttributeError: 'FigureCanvasAgg' object has no attribute 'tostring_rgb'` `[Measured 2026-10-21 via scripts/check_training_env.py]`.
+  - **Dependency Pin & Baseline Alignment**: To ensure reproducible compatibility with Applio's unpatched training logger, `pyproject.toml` pins `matplotlib==3.7.2` (matching Applio's pinned upstream `requirements.txt`) together with NumPy 1.x.
+  - **Verified Status**: In `rvc-train` (Matplotlib 3.7.2, NumPy 1.26.4), `plot_spectrogram_to_numpy()` returns a `uint8 (200, 1000, 3)` image `[Measured 2026-10-21]`.
 
-### 7.2 Fresh-Install Execution Order (Documented Specification)
+### 7.2 Training Environment Install (`rvc-train`, executed 2026-10-21)
 
-For setting up a clean, reproducible training environment from scratch:
+The training environment lives outside the repository and is separate from the inference `.venv`. Never install training packages into `.venv`.
 
-1. **Create and Activate Python 3.11 Virtual Environment**:
+1. **Create the venv with Python 3.11.9**:
    ```powershell
-   python -m venv .venv
-   .venv\Scripts\Activate.ps1
+   & "C:\Users\quach\AppData\Local\Programs\Python311\python.exe" -m venv C:\Users\quach\venvs\rvc-train
+   $py = "C:\Users\quach\venvs\rvc-train\Scripts\python.exe"
    ```
 2. **Install PyTorch 2.5.1 with CUDA 12.1**:
    ```powershell
-   pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+   & $py -m pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
    ```
-3. **Install Project Training Extras**:
+3. **Install training dependencies** (shared packages pinned to the versions verified in `.venv`; NumPy and Matplotlib pinned for the Applio logger):
    ```powershell
-   pip install -e ".[train]"
+   & $py -m pip install numpy==1.26.4 matplotlib==3.7.2 scipy==1.17.1 soundfile==0.14.0 librosa==0.11.0 `
+       faiss-cpu==1.15.1 transformers==4.49.0 tensorboard==2.21.0 noisereduce==3.0.3 torchcrepe==0.0.24 `
+       scikit-learn==1.9.1 pydub==0.25.1 wget==3.2 tqdm
+   & $py -m pip check
    ```
-4. **Apply Applio Streaming Patch**:
+   The resolver kept torch 2.5.1+cu121, numpy 1.26.4 and matplotlib 3.7.2 without conflicts, and `pip check` reported no broken requirements. The full resolved package list is saved in `output/nvf_smoke_v0_2026-10-21/rvc-train-freeze.txt`.
+4. **Run the training preflight** (from the repository root):
    ```powershell
-   python scripts/setup_applio_patch.py --apply
+   & $py scripts/check_training_env.py
    ```
-5. **Validate Environment & Importability Before Training**:
-   ```powershell
-   python scripts/check_environment.py
-   python -c "import torch, torchaudio, numpy, scipy, soundfile, librosa, faiss, sounddevice, transformers, tensorboard, noisereduce, torchcrepe, sklearn, matplotlib, pydub, wget; print('All training dependencies successfully imported!')"
-   ```
+   It checks the interpreter, pinned versions, a small CUDA FP32/FP16 workload, the training-path imports, the Applio spectrogram logger, `fp16_run`, and the pretrained/auxiliary SHA-256 values. Result on 2026-10-21: 10/10 PASS in `rvc-train`. In `.venv` it fails as expected (NumPy, Matplotlib and logger checks).
 
-*Specification Disclaimer*: This fresh-install sequence represents the documented installation specification. It has not yet been executed or validated on a completely clean environment during this task. No packages have been installed, uninstalled, or downgraded in the active environment.
+The Applio streaming patch (`scripts/setup_applio_patch.py`) affects only inference and is applied to the shared `third_party/applio` checkout, so it needs no step here.
+
+`pydub` prints `Couldn't find ffmpeg or avconv` on import. This does not matter for WAV training input, because `rvc/lib/utils.py:load_audio` reads audio with `soundfile`.
 
 ---
 
@@ -768,7 +926,7 @@ For setting up a clean, reproducible training environment from scratch:
 - [ ] Target speaker provided explicit written/recorded consent for local voice-model training and personal voice conversion use.
 - [ ] Dataset contains exclusively the single consenting female Northern Vietnamese speaker.
 - [ ] Speech partitioned before preprocessing: training segment (253.58 s, ~165 s active / ~162 s voiced audio) in `data/dataset_raw/`, held-out segment (256.28–291.09 s) in `data/held_out_test/`, separated by verified 2.70 s natural-silence boundary (253.58–256.28 s).
-- [ ] Training audio in `data/dataset_raw/` passes `scripts/validate_dataset.py` with zero clipping and zero decode errors.
+- [ ] Training audio for the experiment's dataset version (section 2.4) passes `scripts/validate_dataset.py` with zero clipping and zero decode errors. Derived versions must also pass `scripts/verify_dataset_manifest.py --derived`, and `scripts/check_preprocess_peaks.py` must report all stages, including 16 kHz slices, below 0.90.
 - [ ] Pretrained `f0G40k.pth` (~73.1 MB `[Measured]`) and `f0D40k.pth` (~142.9 MB `[Measured]`) placed in `third_party/applio/rvc/models/pretraineds/pretrained_v2/`.
 - [ ] Dedicated experiment directory (`logs/nvf_smoke_v0` or `logs/nvf_short_v1`) initialized cleanly to prevent accidental checkpoint resumption.
 - [ ] `$env:CUDA_VISIBLE_DEVICES = "0"` configured in environment.

@@ -112,3 +112,9 @@ Per-rep mean spread: A 239–241, B 252–261, C 280–286 ms. D's crossfade ass
 - New: `scripts/overlap_crossfade_experiment.py`, `docs/overlap-crossfade-report.md`.
 - New, gitignored outputs: `output/reconcile_ab_2026-10-20/` (rerun JSON and log), `output/overlap_crossfade_2026-10-20/` (`summary.json`, `raw_results.json`, `boundary_rows.csv`, `chunk_lags.csv`, `input_40k.wav`, `reference_rep0.wav`, a `<config>_rep0.wav` per config), and `output/overlap_crossfade_2026-10-20.log`.
 - Nothing existing was modified or overwritten. Nothing was committed or pushed.
+
+## 5. Follow-up (2026-10-21)
+
+After the owner reported choppy live audio on all profiles, the seam defect was re-measured on vctk, A and B and the
+configuration-D approach was implemented with SOLA alignment (`src/voice_changer/audio/crossfade.py`, 200 ms context,
+50 ms sin² crossfade, 0–10 ms lag search). Results and the remaining listening test: `output/live_audio_diag_2026-10-21/README.md`.

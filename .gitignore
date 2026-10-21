@@ -69,3 +69,9 @@ models/indices/*
 .env.*
 config/*.local.json
 config/*.local.yaml
+
+# Local agent instructions
+CLAUDE.md
+GEMINI.md
+prompts/
+

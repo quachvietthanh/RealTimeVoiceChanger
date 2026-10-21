@@ -9,6 +9,10 @@ from dataclasses import dataclass
 from typing import List, Optional
 import sounddevice as sd
 
+# Name fragments of virtual audio cable endpoints (VB-Audio Virtual Cable / Hi-Fi Cable / VoiceMeeter).
+# The playback side of VB-Cable is named "CABLE Input"; apps such as Discord record from "CABLE Output".
+VIRTUAL_CABLE_MARKERS = ("vb-audio", "cable input", "cable output", "hi-fi cable", "voicemeeter")
+
 
 @dataclass(frozen=True)
 class AudioDevice:
@@ -28,6 +32,12 @@ class AudioDevice:
     @property
     def is_output(self) -> bool:
         return self.max_output_channels > 0
+
+    @property
+    def is_virtual_cable(self) -> bool:
+        """Heuristic, name-based: True for VB-Audio / VoiceMeeter style virtual endpoints."""
+        name = self.name.lower()
+        return any(m in name for m in VIRTUAL_CABLE_MARKERS)
 
 
 class AudioDeviceManager:
@@ -63,6 +73,45 @@ class AudioDeviceManager:
     def list_output_devices(self) -> List[AudioDevice]:
         """Enumerate available speakers and virtual cable output devices."""
         return [d for d in self._query_all_devices() if d.is_output]
+
+    def get_device(self, device_id: int) -> Optional[AudioDevice]:
+        """Return the device with this PortAudio index, or None if it does not exist now.
+
+        Indices are only valid for the current device enumeration; they can change when devices are
+        plugged in or removed. Persist (name, host_api) instead, and resolve with find_device().
+        """
+        for d in self._query_all_devices():
+            if d.device_id == device_id:
+                return d
+        return None
+
+    def find_device(self, name: str, host_api: Optional[str], is_input: bool) -> Optional[AudioDevice]:
+        """Find a device by exact name (and host API, if given): the stable way to re-select a device."""
+        candidates = self.list_input_devices() if is_input else self.list_output_devices()
+        for d in candidates:
+            if d.name == name and (host_api is None or d.host_api == host_api):
+                return d
+        return None
+
+    def check_device(self, device_id: Optional[int], is_input: bool, sample_rate: int, channels: int) -> Optional[str]:
+        """Return why the device cannot stream with these settings, or None if PortAudio accepts them.
+
+        `device_id=None` checks the system default device. Does not open a stream.
+        """
+        kind = "input" if is_input else "output"
+        if device_id is not None:
+            d = self.get_device(device_id)
+            if d is None:
+                return f"{kind} device {device_id} does not exist (devices may have been re-enumerated)"
+            available = d.max_input_channels if is_input else d.max_output_channels
+            if available < 1:
+                return f"device {device_id} '{d.name}' has no {kind} channels"
+        check = sd.check_input_settings if is_input else sd.check_output_settings
+        try:
+            check(device=device_id, channels=channels, samplerate=sample_rate, dtype="float32")
+        except Exception as err:
+            return f"{kind} device {device_id if device_id is not None else '(default)'} rejects {sample_rate} Hz, {channels} ch: {err}"
+        return None
 
     def find_device_by_name(self, name_pattern: str, is_input: bool = True) -> Optional[AudioDevice]:
         """Find a device whose name matches the given pattern (case-insensitive)."""

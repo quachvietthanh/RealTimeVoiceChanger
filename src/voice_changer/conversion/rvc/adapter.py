@@ -14,6 +14,25 @@ from typing import Any, Dict, Optional
 
 from voice_changer.conversion.base import ConversionConfig, VoiceConverter
 
+# CPU threads for PyTorch and Faiss when inference runs on CUDA. The CPU-side work per chunk is small,
+# and with the default pools (torch: one thread per core, Faiss: OpenMP) the idle threads spin-wait between
+# calls: measured 4.3 CPU cores busy while streaming vs 0.56 with one thread each, with the same
+# inference time (output/noise_suppression_2026-10-21/README.md, "CPU use").
+CUDA_CPU_THREADS = 1
+
+
+def limit_cpu_threads(n: int) -> None:
+    """Set PyTorch intra-op and Faiss OpenMP thread counts (process-wide)."""
+    import torch
+
+    torch.set_num_threads(n)
+    try:
+        import faiss
+
+        faiss.omp_set_num_threads(n)
+    except ImportError:
+        pass
+
 
 class RVCAdapter(VoiceConverter):
     """Adapter bridging RealTimeVoiceChanger to Applio Core v3.2.8.
@@ -106,8 +125,18 @@ class RVCAdapter(VoiceConverter):
         return self._applio_vc
 
     def load_model(self, model_path: str, index_path: Optional[str] = None) -> None:
-        """Load RVC voice model weights (.pth) and optional Faiss feature index (.index)."""
+        """Load RVC voice model weights (.pth) and optional Faiss feature index (.index).
+
+        The adapter is marked unloaded first, so a failed load never leaves the previous model's
+        state (path, index, model_info) reported as loaded.
+        """
+        self._model_loaded = False
         model_file = Path(model_path)
+        if self.device.startswith("cuda") and CUDA_CPU_THREADS:
+            import torch
+
+            if torch.cuda.is_available():
+                limit_cpu_threads(CUDA_CPU_THREADS)
         if not model_file.exists():
             raise FileNotFoundError(f"RVC model weight file not found: {model_path}")
 
@@ -125,7 +154,7 @@ class RVCAdapter(VoiceConverter):
                 "Checkpoint must be a dictionary containing 'weight' and 'config' keys."
             )
 
-        self._model_info = {
+        model_info = {
             "version": cpt.get("version", "v1"),
             "f0": cpt.get("f0", 1),
             "target_sr": cpt["config"][-1] if isinstance(cpt["config"], (list, tuple)) else None,
@@ -137,11 +166,15 @@ class RVCAdapter(VoiceConverter):
             idx_file = Path(index_path)
             if not idx_file.exists():
                 raise FileNotFoundError(f"RVC feature index file not found: {index_path}")
-            self._index_path = str(idx_file.resolve())
+            resolved_index = str(idx_file.resolve())
         else:
-            self._index_path = ""
+            resolved_index = ""
 
+        self._model_info = model_info
+        self._index_path = resolved_index
         self._model_path = str(model_file.resolve())
+        self._cached_index = None
+        self._cached_big_npy = None
 
         # Sync and verify auxiliary assets before loading pipeline
         self._sync_auxiliary_assets()
@@ -355,3 +388,32 @@ class RVCAdapter(VoiceConverter):
         """Reset internal buffer states."""
         pass
 
+    def unload(self) -> None:
+        """Release the voice model, embedder and cached index, and return GPU memory.
+
+        Safe to call when nothing is loaded. After unload() the adapter can load another model.
+        """
+        self._model_loaded = False
+        self._model_path = None
+        self._index_path = None
+        self._cached_index = None
+        self._cached_big_npy = None
+        self._model_info = {}
+        vc = self._applio_vc
+        self._applio_vc = None
+        if vc is not None:
+            try:
+                vc.cleanup_model()
+            except Exception:  # cleanup is best effort; references are dropped below anyway
+                pass
+            del vc
+        import gc
+
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass

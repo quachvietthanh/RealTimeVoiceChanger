@@ -20,6 +20,8 @@ The system is designed for live conversational use in voice platforms like Disco
 > - **5-Minute Continuous Validation**: **600/600 chunks** processed with **0 steady-state dropouts**, **0 sample mismatches**, and stable **~445 MB VRAM**.
 > - **Active Inference Voice Model**: Technical baseline model `vctk_female_p231` (VCTK female speaker p231, RVC v2, 40 kHz, HiFi-GAN).
 > - **Custom Voice Training (Milestone 4)**: Target Northern Vietnamese female vocal split prepared (`female_train_source.wav` 232.98s and `female_holdout.wav` 31.98s) with cryptographic manifest verification. Isolated training environment architecture (`rvc-train`) designed to maintain strict dependency isolation.
+> - **Voice profiles (2026-10-21)**: three selectable profiles in `config/voice_profiles.json`: `vctk_p231` (prototype, default), `voice_a_preview` (speaker A, nvf_short_v1 e50) and `voice_b_preview` (speaker B, spkb_preview_v2 e25). A and B are **previews pending owner listening**; neither is approved for production. See [docs/voice-profiles.md](docs/voice-profiles.md).
+> - **Backend API for the GUI**: in-process `VoiceChangerService` ([docs/gui-backend-contract.md](docs/gui-backend-contract.md)), headless contract tests. Physical microphone/VB-Cable routing not yet verified on hardware ([docs/audio-routing.md](docs/audio-routing.md)).
 
 ---
 
@@ -33,10 +35,10 @@ The system is designed for live conversational use in voice platforms like Disco
 | **Milestone 3A** | **Latency Reduction**: Faiss in-RAM caching, 0.1s streaming padding, 0.5s chunk configuration, RTF reduced from 0.88 to 0.56. | **DONE** |
 | **Milestone 3A.1** | **Long-Run Streaming Validation**: 5-minute continuous test (600 chunks), 80-sample reflection padding, 0 steady dropouts. | **DONE** |
 | **Milestone 4A** | **Custom Voice Sourcing & Vocal Separation**: High-quality Northern Vietnamese female vocal extraction, listening test approval. | **DONE** |
-| **Milestone 4B** | **Training Preparation & Isolated Environment**: Dataset split, cryptographic manifest, isolated `rvc-train` venv engineering. | **IN PROGRESS** |
-| **Milestone 4C** | **Custom Voice Model Training**: Smoke test (`nvf_smoke_v0`), short run (`nvf_short_v1`), full training (`nvf_full_v1`), Faiss IVF index. | *Planned* |
-| **Milestone 5** | **Virtual Audio Cable Integration & Quality Tuning**: VB-Cable routing, Discord passthrough, acoustic tuning. | *Planned* |
-| **Milestone 6** | **Minimal Desktop GUI & Packaging**: User-friendly control panel for device selection, pitch shifting, and monitoring. | *Planned* |
+| **Milestone 4B** | **Training Preparation & Isolated Environment**: Dataset split, cryptographic manifest, isolated `rvc-train` venv engineering. | **DONE** (training runs executed in `rvc-train`) |
+| **Milestone 4C** | **Custom Voice Model Training**: smoke `nvf_smoke_v0`; A preview `nvf_short_v1` (100 epochs + index); B preview `spkb_preview_v2` (25 epochs + index); full training `nvf_full_v1`. | **IN PROGRESS**: previews trained and evaluated offline; owner listening pending; no full training |
+| **Milestone 5** | **Virtual Audio Cable Integration & Quality Tuning**: VB-Cable routing, Discord passthrough, acoustic tuning. | **IN PROGRESS**: backend device support done; not physically verified (no VB-Cable installed) |
+| **Milestone 6** | **Minimal Desktop GUI & Packaging**: User-friendly control panel for device selection, pitch shifting, and monitoring. | **IN PROGRESS**: backend contract done; GUI (Gemini) not started |
 
 ---
 
@@ -136,6 +138,21 @@ python scripts/realtime_prototype.py --language vi --chunk-size 0.5
 python -m unittest discover -s tests
 ```
 
+Unit and integration tests need no GPU or audio device (`tests/integration/test_profile_assets.py` reads the model files on the CPU and skips profiles whose files are absent).
+
+### 6. Backend API (GUI integration) and headless GPU simulation
+
+```powershell
+# Inspect profiles (full validation), devices and status; loads nothing onto the GPU
+.venv\Scripts\python scripts/backend_api_example.py
+
+# Real GPU inference through the service API with simulated devices (nothing is played): profile switching A -> B -> A
+.venv\Scripts\python scripts/service_simulation.py --profiles voice_a_preview,voice_b_preview,voice_a_preview --seconds 32
+
+# 600-chunk / 5-minute regression through the service API (baseline conditions: vctk, +10, index 0.75)
+.venv\Scripts\python scripts/service_simulation.py --profiles vctk_p231 --seconds 300 --pitch 10 --index-rate 0.75 --json-output output/<new_dir>/long_run.json
+```
+
 ---
 
 ## Custom Voice Training (Northern Vietnamese Female)
@@ -145,10 +162,13 @@ The dataset preparation and model training workflow is documented in detail in:
 - [Hướng dẫn huấn luyện giọng Bắc Việt](file:///C:/Users/quach/Desktop/RealTimeVoiceChanger/docs/huong-dan-huan-luyen-giong-bac-viet.md)
 
 ### Current Dataset Split Status
-- **Source Audio**: `data/source_audio/female_source_vocal_preview.wav` (Clean isolated vocals, 40 kHz, mono, 264.96s).
-- **Training Segment**: `data/dataset_raw/female_train_source.wav` (232.98s, ~44.7 MB, SHA-256 verified).
-- **Held-Out Test Segment**: `data/held_out_test/female_holdout.wav` (31.98s, ~6.1 MB, SHA-256 verified).
-- **Split Manifest**: `data/source_audio/dataset_split_manifest.json` with cryptographic SHA-256 verification.
+Values below were verified on 2026-10-21 with `scripts/verify_dataset_manifest.py`.
+
+- **Source Audio**: `data/source_audio/female_source_vocal_preview.wav` (isolated vocals, 44.1 kHz, stereo, PCM_16, 295.17 s).
+- **Training Segment (`split_v1`, original)**: `data/dataset_raw/female_train_source.wav` (253.58 s, ~44.7 MB). Peak 0.9908, which fails the < 0.90 rule; it was used only for the `nvf_smoke_v0` pipeline check.
+- **Derived Training Set (`train_peak0p88`)**: `data/dataset_train_peak0p88/female_train_source_peak0p88.wav` (the same audio × 0.88813 gain, FLOAT32, peak 0.88), with `derived_manifest.json`. This is the input for `nvf_short_v1`.
+- **Held-Out Test Segment**: `data/held_out_test/female_holdout.wav` (34.81 s, ~6.1 MB), unchanged and shared by all versions.
+- **Split Manifest**: `data/source_audio/dataset_split_manifest.json`. Dataset versions and experiment assignment are listed in section 2.4 of the training plan.
 
 ---
 
@@ -158,7 +178,8 @@ The dataset preparation and model training workflow is documented in detail in:
 RealTimeVoiceChanger/
 ├── config/                         # Configuration guidelines and local overrides
 ├── data/                           # Dataset preparation & audio assets
-│   ├── dataset_raw/                # Training partition (female_train_source.wav)
+│   ├── dataset_raw/                # Original training partition (female_train_source.wav)
+│   ├── dataset_train_peak0p88/     # Derived training set (gain 0.888, peak 0.88) + derived_manifest.json
 │   ├── held_out_test/              # Evaluation partition (female_holdout.wav)
 │   └── source_audio/               # Clean vocal preview & dataset_split_manifest.json
 ├── docs/                           # Technical documentation & architecture
