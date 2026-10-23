@@ -44,10 +44,11 @@ class FakeConverter:
         self.fail_load = fail_load
         self.model = None
 
-    def load_model(self, model_path, index_path=None):
+    def load_model(self, model_path, index_path=None, *, model_sha256=None, index_sha256=None):
         if self.fail_load:
             raise RuntimeError("CUDA out of memory")
         self.model = (model_path, index_path)
+        self.pins = (model_sha256, index_sha256)
         FakeConverter.loaded_now += 1
         FakeConverter.max_loaded = max(FakeConverter.max_loaded, FakeConverter.loaded_now)
 
@@ -129,6 +130,7 @@ class ServiceTestBase(unittest.TestCase):
                 "index_sha256": hashlib.sha256(pid.encode() * 2).hexdigest(),
                 "defaults": {"pitch_shift": 12.0 if pid == "a" else 14.0, "index_rate": 0.5 if pid == "a" else 0.25},
             })
+        profiles.append({"id": "jett", "display_name": "Jett", "status": "planned", "data_rights": "unverified"})
         (d / "p.json").write_text(json.dumps({"schema_version": 1, "default_profile": "a", "profiles": profiles}))
         self.registry = ProfileRegistry.from_file(d / "p.json", base_dir=d)
         self.dir = d
@@ -148,6 +150,7 @@ class ServiceTestBase(unittest.TestCase):
             self.streams.append((inp, out))
             return RealTimeVoiceChangerPipeline(input_stream=inp, output_stream=out, **kw)
 
+        self.converter_factory, self.pipeline_factory = converter_factory, pipeline_factory
         self.svc = VoiceChangerService(self.registry, FakeDevices(), converter_factory, pipeline_factory)
         self.events = []
         self.svc.add_status_listener(lambda s: self.events.append(s.state))
@@ -201,6 +204,12 @@ class LifecycleContractTests(ServiceTestBase):
         conv = self.svc._converter
         self.assertTrue(conv.model[0].endswith("b.pth") and conv.model[1].endswith("b.index"))
 
+    def test_converter_receives_the_profiles_pins_to_recheck_on_the_loaded_bytes(self):
+        self.svc.select_profile("b")
+        b = self.registry.get("b")
+        self.assertEqual(self.svc._converter.pins, (b.model_sha256, b.index_sha256))
+        self.assertIsNotNone(b.model_sha256)
+
     def test_switch_while_running_is_refused(self):
         self.svc.select_profile("a")
         self.svc.start()
@@ -222,6 +231,17 @@ class LifecycleContractTests(ServiceTestBase):
         st = self.svc.get_status()
         self.assertEqual((st.state, st.profile_id), (EngineState.READY, "a"))
         self.assertEqual(st.last_error.code, "profile_invalid")
+
+    def test_planned_profile_is_refused_and_keeps_current_model(self):
+        self.svc.select_profile("a")
+        with self.assertRaises(ProfileError) as ctx:
+            self.svc.select_profile("jett")
+        self.assertEqual(ctx.exception.code, "profile_not_ready")
+        self.assertIn("No model yet", ctx.exception.hint)
+        st = self.svc.get_status()
+        self.assertEqual((st.state, st.profile_id, st.model_loaded), (EngineState.READY, "a", True))
+        self.assertEqual(st.last_error.code, "profile_not_ready")
+        self.assertEqual(FakeConverter.loaded_now, 1)
 
     def test_unknown_profile(self):
         with self.assertRaises(ProfileError) as ctx:
@@ -387,7 +407,7 @@ class HealthAndMetricsTests(ServiceTestBase):
             while self.svc.get_status().state != EngineState.LOADING and time.monotonic() < deadline:
                 time.sleep(0.005)
             self.assertEqual(self.svc.get_status().state, EngineState.LOADING)
-            self.assertEqual(len(self.svc.list_profiles()), 2)
+            self.assertEqual(len(self.svc.list_profiles()), len(self.registry.list_profiles()))
             gate.set()
             t.join()
         self.assertEqual(self.svc.get_status().state, EngineState.READY)
@@ -420,8 +440,210 @@ class HealthAndMetricsTests(ServiceTestBase):
         self.svc.select_profile("b")
         summaries = {p.profile_id: p for p in self.svc.list_profiles()}
         self.assertTrue(summaries["b"].is_active and not summaries["a"].is_active)
-        self.assertTrue(all(p.files_present for p in summaries.values()))
+        self.assertTrue(all(summaries[pid].files_present for pid in ("a", "b")))
+        self.assertEqual({summaries[pid].readiness for pid in ("a", "b")}, {"files_present"})
         self.assertEqual(summaries["b"].defaults.pitch_shift, 14.0)
+
+    def test_selectable_and_startup_resolution(self):
+        summaries = {p.profile_id: p for p in self.svc.list_profiles()}
+        self.assertEqual({pid: s.selectable for pid, s in summaries.items()}, {"a": True, "b": True, "jett": False})
+        self.assertEqual(self.svc.resolve_profile_id("b"), "b")
+        for stale in ("jett", "removed_profile", None):  # planned, unknown, nothing saved -> default
+            self.assertEqual(self.svc.resolve_profile_id(stale), "a")
+        (self.dir / "a.pth").unlink()  # default no longer on disk
+        self.assertEqual(self.svc.resolve_profile_id("jett"), None)
+        self.assertEqual(self.svc.resolve_profile_id("b"), "b")
+        self.assertIsNone(self.svc.get_status().last_error)  # resolution never raises or records errors
+
+    def test_planned_profile_is_listed_but_not_ready(self):
+        jett = {p.profile_id: p for p in self.svc.list_profiles()}["jett"]
+        self.assertEqual((jett.status, jett.readiness, jett.files_present, jett.is_active, jett.data_rights),
+                         ("planned", "no_model", False, False, "unverified"))
+        self.assertIn("No model yet", jett.setup_hint)
+        self.assertFalse(self.svc.validate_profile("jett").ok)
+
+    def test_missing_files_are_reported_with_a_hint(self):
+        (self.dir / "a.index").unlink()
+        a = {p.profile_id: p for p in self.svc.list_profiles()}["a"]
+        self.assertEqual((a.readiness, a.files_present), ("files_missing", False))
+        self.assertTrue(a.setup_hint)
+
+
+class WithdrawnProfileTests(ServiceTestBase):
+    """A withdrawn profile (Voice A since 2026-10-22) keeps its files but is out of normal selection."""
+
+    REASON = "Echo during live use; under investigation."
+
+    def setUp(self):
+        super().setUp()
+        data = json.loads((self.dir / "p.json").read_text())
+        data["default_profile"] = "b"
+        data["profiles"][0]["withdrawn_reason"] = self.REASON
+        (self.dir / "p_w.json").write_text(json.dumps(data))
+        self.svc.shutdown()
+        self.registry = ProfileRegistry.from_file(self.dir / "p_w.json", base_dir=self.dir)
+        self.svc = VoiceChangerService(self.registry, FakeDevices(), self.converter_factory, self.pipeline_factory)
+
+    def test_hidden_from_normal_listing(self):
+        self.assertEqual([p.profile_id for p in self.svc.list_profiles()], ["b", "jett"])
+        listed = {p.profile_id: p for p in self.svc.list_profiles(include_withdrawn=True)}
+        self.assertEqual(listed["a"].withdrawn_reason, self.REASON)
+        self.assertEqual((listed["a"].readiness, listed["a"].files_present), ("files_present", True))
+        self.assertEqual(listed["b"].withdrawn_reason, "")
+
+    def test_selection_is_refused_and_keeps_the_current_model(self):
+        self.svc.select_profile("b")
+        with self.assertRaises(ProfileError) as ctx:
+            self.svc.select_profile("a")
+        self.assertEqual(ctx.exception.code, "profile_withdrawn")
+        self.assertIn(self.REASON, ctx.exception.hint)
+        st = self.svc.get_status()
+        self.assertEqual((st.state, st.profile_id, st.model_loaded), (EngineState.READY, "b", True))
+        self.assertEqual(self.loaded_model(), "b.pth")
+        self.assertEqual(FakeConverter.loaded_now, 1)
+
+    def test_saved_withdrawn_profile_falls_back_to_the_default(self):
+        self.assertEqual(self.svc.resolve_profile_id("a"), "b")
+        self.svc.select_profile("a", allow_withdrawn=True)  # loaded for diagnostics: still not offered
+        self.assertFalse({p.profile_id: p for p in self.svc.list_profiles()}["a"].selectable)
+        self.assertEqual(self.svc.resolve_profile_id("a"), "b")
+
+    def test_explicit_diagnostic_selection_still_works(self):
+        self.svc.select_profile("a", allow_withdrawn=True)
+        self.assertEqual((self.svc.get_status().profile_id, self.loaded_model()), ("a", "a.pth"))
+        self.assertTrue(self.svc.validate_profile("a").ok)
+        self.assertTrue(any("withdrawn" in w for w in self.svc.validate_profile("a").warnings))
+        # While loaded it stays listed, so a client can still show what is active.
+        self.assertTrue({p.profile_id: p for p in self.svc.list_profiles()}["a"].is_active)
+
+    def loaded_model(self):
+        return Path(self.svc._converter.model[0]).name
+
+
+class JettSageLifecycleTests(ServiceTestBase):
+    """Jett and Sage with (fake) assets of their own: selection, refusal and switching rules."""
+
+    def setUp(self):
+        super().setUp()
+        for pid in ("jett", "sage"):
+            (self.dir / f"{pid}.pth").write_bytes(f"{pid}-model".encode())
+            (self.dir / f"{pid}.index").write_bytes(f"{pid}-index".encode())
+        self.build({})
+
+    def build(self, overrides, **ckpt_overrides):
+        """Rebuild the service with a, b, jett, sage; `overrides` = {pid: {field: value}}."""
+        data = json.loads((self.dir / "p.json").read_text())
+        data["profiles"] = [p for p in data["profiles"] if p["id"] in ("a", "b")]
+        for pid, pitch in (("jett", 12.0), ("sage", 10.0)):
+            entry = {"id": pid, "display_name": pid.title(), "status": "preview", "data_rights": "licensed",
+                     "model_path": f"{pid}.pth", "model_sha256": hashlib.sha256(f"{pid}-model".encode()).hexdigest(),
+                     "index_path": f"{pid}.index", "index_sha256": hashlib.sha256(f"{pid}-index".encode()).hexdigest(),
+                     "defaults": {"pitch_shift": pitch}}
+            entry.update(overrides.get(pid, {}))
+            data["profiles"].append(entry)
+        (self.dir / "p_js.json").write_text(json.dumps(data))
+        self.svc.shutdown()
+        self.registry = ProfileRegistry.from_file(self.dir / "p_js.json", base_dir=self.dir)
+        self.svc = VoiceChangerService(self.registry, FakeDevices(), self.converter_factory, self.pipeline_factory)
+        if ckpt_overrides:
+            self.patches[0].stop()
+            self.patches[0] = mock.patch("voice_changer.conversion.rvc.assets.inspect_checkpoint",
+                                         return_value=CheckpointInfo(**{**CKPT.__dict__, **ckpt_overrides}))
+            self.patches[0].start()
+
+    def loaded_files(self):
+        model, index = self.svc._converter.model
+        return Path(model).name, Path(index).name if index else None
+
+    def test_registry_lists_jett_and_sage_separately(self):
+        summaries = {p.profile_id: p for p in self.svc.list_profiles()}
+        self.assertEqual((summaries["jett"].display_name, summaries["sage"].display_name), ("Jett", "Sage"))
+        self.assertEqual({summaries[p].readiness for p in ("jett", "sage")}, {"files_present"})
+        self.assertNotEqual(self.registry.get("jett").model_path, self.registry.get("sage").model_path)
+
+    def test_switch_jett_to_sage_loads_only_sages_files_and_releases_jett(self):
+        self.svc.select_profile("jett")
+        self.assertEqual(self.loaded_files(), ("jett.pth", "jett.index"))
+        self.svc.start()
+        self.svc.stop()
+        self.assertIsNotNone(self.svc.get_metrics())
+        self.svc.select_profile("sage")
+        self.assertEqual(self.loaded_files(), ("sage.pth", "sage.index"))
+        st = self.svc.get_status()
+        self.assertEqual((st.state, st.profile_id, st.config.pitch_shift), (EngineState.READY, "sage", 10.0))
+        self.assertEqual((FakeConverter.loaded_now, FakeConverter.max_loaded), (1, 1))
+        self.assertIsNone(self.svc.get_metrics())  # Jett's session metrics never describe Sage
+
+    def test_switch_while_running_is_refused_and_jett_keeps_streaming(self):
+        self.svc.select_profile("jett")
+        self.svc.start()
+        with self.assertRaises(InvalidStateError):
+            self.svc.select_profile("sage")
+        st = self.svc.get_status()
+        self.assertEqual((st.state, st.profile_id), (EngineState.RUNNING, "jett"))
+        self.assertEqual(self.loaded_files(), ("jett.pth", "jett.index"))
+
+    def test_hash_mismatch_is_refused_and_active_profile_survives(self):
+        self.svc.select_profile("jett")
+        (self.dir / "sage.pth").write_bytes(b"a different checkpoint")
+        with self.assertRaises(ProfileError) as ctx:
+            self.svc.select_profile("sage")
+        self.assertEqual(ctx.exception.code, "profile_invalid")
+        self.assertIn("does not match its registered SHA-256", ctx.exception.hint)
+        st = self.svc.get_status()
+        self.assertEqual((st.state, st.profile_id, st.model_loaded), (EngineState.READY, "jett", True))
+        self.assertEqual(self.loaded_files(), ("jett.pth", "jett.index"))
+
+    def test_missing_checkpoint_is_not_ready_with_its_path(self):
+        (self.dir / "jett.pth").unlink()
+        jett = {p.profile_id: p for p in self.svc.list_profiles()}["jett"]
+        self.assertEqual((jett.readiness, jett.files_present), ("files_missing", False))
+        with self.assertRaises(ProfileError) as ctx:
+            self.svc.select_profile("jett")
+        self.assertEqual(ctx.exception.code, "profile_invalid")
+        self.assertIn(f"model file not found: {self.dir / 'jett.pth'}", ctx.exception.hint)
+        self.assertEqual(FakeConverter.loaded_now, 0)
+
+    def test_missing_declared_index_is_not_ready(self):
+        (self.dir / "sage.index").unlink()
+        sage = {p.profile_id: p for p in self.svc.list_profiles()}["sage"]
+        self.assertEqual(sage.readiness, "files_missing")
+        with self.assertRaises(ProfileError) as ctx:
+            self.svc.select_profile("sage")
+        self.assertIn("index file not found", ctx.exception.hint)
+
+    def test_sage_pointing_at_jetts_files_is_refused(self):
+        self.build({"sage": {"model_path": "jett.pth", "model_sha256": None,
+                             "index_path": "jett.index", "index_sha256": None}})
+        v = self.svc.validate_profile("sage")
+        self.assertFalse(v.ok)
+        self.assertTrue(any("also registered for profile 'jett'" in e for e in v.errors), v.errors)
+        with self.assertRaises(ProfileError):
+            self.svc.select_profile("sage")
+
+    def test_copy_of_another_voices_model_is_refused(self):
+        # A copy of voice A's checkpoint registered as Jett, under a new file name and with its own hash pinned.
+        (self.dir / "jett_copy.pth").write_bytes(b"a")
+        self.build({"jett": {"model_path": "jett_copy.pth", "model_sha256": hashlib.sha256(b"a").hexdigest()}})
+        v = self.svc.validate_profile("jett")
+        self.assertFalse(v.ok)
+        self.assertTrue(any("same content as profile 'a'" in e for e in v.errors), v.errors)
+        self.assertTrue(self.svc.validate_profile("a").ok)  # the earlier voice keeps working
+
+    def test_unsupported_embedder_is_refused(self):
+        self.build({}, embedder_model="chinese-hubert-base")
+        with self.assertRaises(ProfileError) as ctx:
+            self.svc.select_profile("jett")
+        self.assertIn("embedder 'chinese-hubert-base'", ctx.exception.hint)
+        self.assertEqual(FakeConverter.loaded_now, 0)
+
+    def test_non_40k_model_loads_with_a_warning(self):
+        self.build({}, sample_rate=48000, embedder_model="contentvec")
+        v = self.svc.validate_profile("jett")
+        self.assertTrue(v.ok, v.errors)
+        self.assertTrue(any("48000 Hz" in w for w in v.warnings))
+        self.svc.select_profile("jett")
+        self.assertEqual(self.svc.get_status().state, EngineState.READY)
 
 
 if __name__ == "__main__":

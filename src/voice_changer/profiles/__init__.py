@@ -4,6 +4,7 @@ Declares selectable voices (checkpoint + matching index + default settings) and 
 """
 
 from voice_changer.profiles.registry import (
+    DATA_RIGHTS,
     DEFAULT_REGISTRY_PATH,
     PROFILE_STATUSES,
     ProfileRegistry,
@@ -13,6 +14,7 @@ from voice_changer.profiles.registry import (
 )
 
 __all__ = [
+    "DATA_RIGHTS",
     "DEFAULT_REGISTRY_PATH",
     "PROFILE_STATUSES",
     "ProfileRegistry",

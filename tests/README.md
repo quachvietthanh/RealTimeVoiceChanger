@@ -43,7 +43,8 @@ python scripts/offline_conversion_test.py
 | `unit/test_noise_suppression.py` | suppressor: exact reconstruction/latency for any call sizes, per-mode attenuation, state across chunks, reset; stage: pure delay when off, priming + ramp, live disable/mode change, failure fallback, session reset | nothing |
 | `unit/test_adapter_threads.py` | CPU thread pools limited to 1 for CUDA inference only | nothing |
 | `unit/test_crossfade.py` | `ChunkStitcher`: context, exact chunk length, SOLA lag compensation, crossfade continuity, reset, validation | nothing |
-| `unit/test_voice_profiles.py` | profile registry parsing and validation, config ranges | nothing (mocked model inspection) |
+| `unit/test_voice_profiles.py` | profile registry parsing and validation, config ranges, Jett/Sage planned, Voice A/B pins unchanged, Voice A withdrawn, `withdrawn_reason` rules | nothing (mocked model inspection) |
+| `unit/test_profile_registration.py` | registering a model for a planned profile: dry run, single-entry write + backup, refusals (rights, index, missing/shared/cache files, embedder, status) | nothing (mocked model inspection) |
 | `unit/test_devices.py` | device enumeration, virtual-cable flag, 40 kHz checks | nothing (mocked sounddevice) |
 | `integration/test_simulated_streaming.py` | sample continuity through the real ring buffer (old joining and context + crossfade), real noise suppressor in the real-time path, device-loss detection | CPU, ~17 s real time |
 | `integration/test_profile_assets.py` | every registered profile's real files: hashes, checkpoint, index dimension | model files (skips if absent) |

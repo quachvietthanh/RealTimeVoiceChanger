@@ -22,6 +22,12 @@ from voice_changer.conversion.base import ConversionConfig, VoiceConverter
 
 logger = logging.getLogger(__name__)
 
+# Per-chunk timings are kept (and logged once) for this many chunks at the start of a session.
+STARTUP_DIAGNOSTIC_CHUNKS = 5
+# First-chunk processing up to this much slower than expected keeps the full prebuffer (normal jitter;
+# measured p95 - median inference is ~15-25 ms).
+STARTUP_LATENESS_TOLERANCE_S = 0.05
+
 
 @dataclass
 class PipelineMetrics:
@@ -61,6 +67,10 @@ class PipelineMetrics:
     software_e2e_times_ms: list[float] = field(default_factory=list)
     output_buffer_occupancy_ms: list[float] = field(default_factory=list)
     speech_onset_latency_ms: float = 0.0
+    # First STARTUP_DIAGNOSTIC_CHUNKS converted chunks: software timings and playback-buffer level.
+    startup_chunks: list[dict[str, Any]] = field(default_factory=list)
+    expected_inference_ms: float = 0.0
+    prebuffer_credit_ms: float = 0.0
 
     start_time: float = 0.0
     end_time: float = 0.0
@@ -156,6 +166,9 @@ class PipelineMetrics:
             "p99_queue_wait_ms": round(self._pct(self.queue_wait_times_ms, 99), 2),
             "max_queue_wait_ms": round(max(self.queue_wait_times_ms, default=0.0), 2),
             "speech_onset_latency_ms": round(self.speech_onset_latency_ms, 1),
+            "startup_chunks": [dict(c) for c in self.startup_chunks],
+            "expected_inference_ms": round(self.expected_inference_ms, 1),
+            "prebuffer_credit_ms": round(self.prebuffer_credit_ms, 1),
             "avg_software_e2e_ms": round(self.avg_software_e2e_ms, 1),
             "median_software_e2e_ms": round(self.median_software_e2e_ms, 1),
             "p95_software_e2e_ms": round(self.p95_software_e2e_ms, 1),
@@ -200,6 +213,7 @@ class RealTimeVoiceChangerPipeline:
         crossfade_duration_s: float = 0.05,
         sola_search_s: float = 0.01,
         noise_suppression: Optional[NoiseSuppressionSettings] = None,
+        expected_inference_s: Optional[float] = None,
     ) -> None:
         """Create a stopped pipeline.
 
@@ -217,9 +231,18 @@ class RealTimeVoiceChangerPipeline:
         audio by one 20 ms frame, on or off, so it can be toggled live without shifting the timeline.
         None means no stage at all (the exact behaviour before noise suppression existed).
 
+        Startup: with continuous playback every sample has the latency of the first chunk, so a slow
+        first chunk (e.g. the GPU waking up after idling) would add its lateness to the whole session.
+        With `expected_inference_s` (steady-state conversion time of one chunk), the first chunk's
+        processing time beyond expected + STARTUP_LATENESS_TOLERANCE_S is taken off the output stream's
+        prebuffer wait (at most the prebuffer minus one output block), so playback starts as if it had
+        been on time. Only when the first chunk finished before the second could be ready; otherwise the
+        worker is behind and the full prebuffer is kept. No audio is discarded; lateness beyond the credit
+        remains. None keeps the full prebuffer.
+
         Raises:
-            ValueError: If the sample rate, chunk duration, queue size, prebuffer, seam lengths or noise
-                suppression settings are invalid.
+            ValueError: If the sample rate, chunk duration, queue size, prebuffer, seam lengths, noise
+                suppression settings or expected inference time are invalid.
         """
         if sample_rate <= 0:
             raise ValueError(f"sample_rate must be positive, got {sample_rate}")
@@ -229,7 +252,10 @@ class RealTimeVoiceChangerPipeline:
             raise ValueError(f"max_queue_size must be >= 1, got {max_queue_size}")
         if prebuffer_duration_s < 0:
             raise ValueError(f"prebuffer_duration_s must be >= 0, got {prebuffer_duration_s}")
+        if expected_inference_s is not None and not (np.isfinite(expected_inference_s) and expected_inference_s >= 0):
+            raise ValueError(f"expected_inference_s must be a finite value >= 0, got {expected_inference_s}")
         self.converter = converter
+        self.expected_inference_s = expected_inference_s
         self.config = conversion_config or ConversionConfig()
         self.input_device_id = input_device_id
         self.output_device_id = output_device_id
@@ -425,10 +451,12 @@ class RealTimeVoiceChangerPipeline:
                     if self._noise_stage is not None:
                         self._noise_stage.reset(keep_noise_estimate=True)
                 last_seq = seq
+                ns_ms: Optional[float] = None
                 if self._noise_stage is not None:
                     t_ns = time.perf_counter()
                     chunk_arr = self._noise_stage.process(chunk_arr)
-                    self.metrics.noise_suppression_times_ms.append((time.perf_counter() - t_ns) * 1000.0)
+                    ns_ms = (time.perf_counter() - t_ns) * 1000.0
+                    self.metrics.noise_suppression_times_ms.append(ns_ms)
                 model_in = self._stitcher.model_input(chunk_arr)
 
                 t0 = time.perf_counter()
@@ -456,6 +484,10 @@ class RealTimeVoiceChangerPipeline:
                     self.metrics.sample_count_mismatches += 1
                 converted = self._stitcher.join(converted)
 
+                startup = len(self.metrics.startup_chunks) < STARTUP_DIAGNOSTIC_CHUNKS
+                buffer_before_ms = self.output_stream.buffered_seconds * 1000.0 if startup else 0.0
+                if self.metrics.total_chunks_converted == 1:
+                    self._apply_prebuffer_credit(time.perf_counter() - t_ready)
                 self.output_stream.write_chunk(converted)
                 t_written = time.perf_counter()
 
@@ -465,7 +497,11 @@ class RealTimeVoiceChangerPipeline:
                 self.metrics.software_e2e_times_ms.append(e2e_ms)
                 if self.metrics.speech_onset_latency_ms == 0.0:
                     self.metrics.speech_onset_latency_ms = e2e_ms
-                self.metrics.output_buffer_occupancy_ms.append(self.output_stream.buffered_seconds * 1000.0)
+                buffer_after_ms = self.output_stream.buffered_seconds * 1000.0
+                self.metrics.output_buffer_occupancy_ms.append(buffer_after_ms)
+                if startup:
+                    self._record_startup_chunk(seq, queue_wait_ms, ns_ms, infer_duration_ms, turnaround_ms,
+                                               e2e_ms, buffer_before_ms, buffer_after_ms)
 
             except Exception as err:
                 # The chunk is lost; the output buffer covers the gap or underflows (counted).
@@ -480,6 +516,44 @@ class RealTimeVoiceChangerPipeline:
 
         logger.info("Real-time inference worker thread terminated.")
 
+    def _apply_prebuffer_credit(self, processing_s: float) -> None:
+        """Called before the session's first write: offset a late first chunk against the prebuffer.
+
+        Withheld unless the first chunk is written before the second can be ready: input arrives in whole
+        blocks, so that is at the earliest floor(chunk / input block) blocks after the first. A later first
+        chunk means the worker is already behind, and that backlog is carried by every following chunk;
+        only the full prebuffer absorbs it.
+        """
+        if self.expected_inference_s is None:
+            return
+        block = getattr(self.input_stream, "block_size", None)
+        if not isinstance(block, int) or block <= 0:
+            return  # unknown input timing: keep the full prebuffer
+        next_ready_s = (self.chunk_samples // block) * block / self.sample_rate
+        if not processing_s < next_ready_s:
+            return
+        lateness_s = processing_s - self.expected_inference_s - STARTUP_LATENESS_TOLERANCE_S
+        # Optional part of the output-stream interface; streams without it keep the full prebuffer.
+        apply = getattr(self.output_stream, "apply_prebuffer_credit", None)
+        if lateness_s > 0.0 and apply is not None:
+            self.metrics.prebuffer_credit_ms = float(apply(lateness_s)) * 1000.0
+
+    def _record_startup_chunk(self, seq: Optional[int], queue_wait_ms: float, ns_ms: Optional[float],
+                              inference_ms: float, turnaround_ms: float, e2e_ms: float,
+                              buffer_before_ms: float, buffer_after_ms: float) -> None:
+        """Keep one startup chunk's software timings; log all of them once the set is complete."""
+        self.metrics.startup_chunks.append({
+            "seq": seq, "queue_wait_ms": round(queue_wait_ms, 2),
+            "noise_suppression_ms": None if ns_ms is None else round(ns_ms, 2),
+            "inference_ms": round(inference_ms, 1), "turnaround_ms": round(turnaround_ms, 1),
+            "software_e2e_ms": round(e2e_ms, 1), "buffer_before_write_ms": round(buffer_before_ms, 1),
+            "buffer_after_write_ms": round(buffer_after_ms, 1),
+        })
+        if len(self.metrics.startup_chunks) == STARTUP_DIAGNOSTIC_CHUNKS:
+            logger.info("startup chunks (software timings; expected inference %.1f ms, prebuffer credit %.1f ms): %s",
+                        self.metrics.expected_inference_ms, self.metrics.prebuffer_credit_ms,
+                        self.metrics.startup_chunks)
+
     def start(self) -> None:
         """Start the real-time audio pipeline."""
         if self._running:
@@ -491,6 +565,7 @@ class RealTimeVoiceChangerPipeline:
         logger.info("Starting real-time voice changer pipeline...")
         self.metrics = PipelineMetrics()
         self.metrics.start_time = time.perf_counter()
+        self.metrics.expected_inference_ms = (self.expected_inference_s or 0.0) * 1000.0
         ns_latency = self._noise_stage.latency_samples if self._noise_stage is not None else 0
         self.metrics.noise_suppression_latency_ms = ns_latency / self.sample_rate * 1000.0
         self.metrics.algorithmic_delay_ms = (self._stitcher.nominal_delay_samples + ns_latency) / self.sample_rate * 1000.0

@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "realtime-voice-changer"
-version = "0.1.0"
+# Single source of truth: voice_changer.__version__ (src/voice_changer/__init__.py).
+dynamic = ["version"]
 description = "A real-time male-to-female voice changer for Windows using RVC"
 readme = "README.md"
 requires-python = ">=3.10,<3.12"
@@ -25,13 +26,24 @@ classifiers = [
 dependencies = [
     "torch==2.5.1",
     "torchaudio==2.5.1",
-    "numpy>=1.23,<2.0",
+    # Tested: 2.4.6 in the inference .venv, 1.26.4 in the training env (Matplotlib 3.7.2 needs 1.x there).
+    # 2.5+ is untested. scipy 1.17 needs >=1.26.4.
+    "numpy>=1.26.4,<2.5",
     "scipy>=1.10",
     "soundfile>=0.12",
     "librosa>=0.10",
     "faiss-cpu>=1.7.4",
     "sounddevice>=0.4.6",
     "transformers>=4.40",
+    # Imported at module level by the Applio modules loaded for inference (rvc.infer.infer, rvc.infer.pipeline,
+    # rvc.lib.utils, rvc.lib.predictors.FCPE); loading a model fails without them. Lower bounds = tested venv.
+    "torchcrepe>=0.0.23",
+    "noisereduce>=3.0.0",
+    "pedalboard>=0.9",
+    "pydub>=0.25.0",
+    "wget>=3.2",
+    "einops>=0.8",
+    "local-attention>=1.9",
 ]
 
 [project.optional-dependencies]
@@ -52,8 +64,20 @@ train = [
 [project.scripts]
 voice-changer = "voice_changer.main:main"
 
+[tool.setuptools.dynamic]
+version = { attr = "voice_changer.__version__" }
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# GUI data files read at runtime by gui/presentation.py (assets/ has no __init__.py).
+[tool.setuptools.package-data]
+"voice_changer.gui" = [
+    "assets/*.json",
+    "assets/icons/*.png",
+    "assets/icons/*.ico",
+    "assets/icons/*.svg",
+]
 
 [tool.pyright]
 include = ["src", "scripts", "tests"]
@@ -64,3 +88,4 @@ extraPaths = [
     "src",
     "third_party/applio"
 ]
+reportMissingTypeStubs = "none"

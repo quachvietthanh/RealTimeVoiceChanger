@@ -874,7 +874,7 @@ No index has been built and no evaluation has been run yet. Loss values say noth
 ### 7.1 Python & NumPy Version Constraints
 
 - **Python Baseline**: **Python 3.11** is the documented project baseline. In `pyproject.toml`, `requires-python = ">=3.10,<3.12"` explicitly excludes unverified Python 3.12+ environments.
-- **NumPy Baseline**: **NumPy 1.x** is the intended training baseline, with **NumPy 1.26.4** as the initial verification target. The package manifest maintains `numpy>=1.23,<2.0`.
+- **NumPy Baseline**: **NumPy 1.x** is the intended training baseline, with **NumPy 1.26.4** as the initial verification target. The package manifest declares `numpy>=1.26.4,<2.5` (since 2026-10-22), which admits both the training pin 1.26.4 and the inference venv's 2.4.6.
   > [!IMPORTANT]
   > **Environment Split (verified 2026-10-21)**: Training runs only in the dedicated environment `C:\Users\quach\venvs\rvc-train` (Python 3.11.9, NumPy 1.26.4, Matplotlib 3.7.2, PyTorch 2.5.1+cu121). The inference environment `.venv` keeps NumPy 2.4.6 / Matplotlib 3.11.2 and must not be used for training: `scripts/check_training_env.py` fails there on the Matplotlib logger check.
 - **Module-Level Training Imports**: `pydub>=0.25.0` and `wget>=3.2` are required in `[project.optional-dependencies] train` because both are imported at module level in `third_party/applio/rvc/lib/utils.py` (`from pydub import AudioSegment` and `import wget`), which is loaded on the preprocessing and extraction paths whenever `preprocess.py` or `extract.py` imports `load_audio` or `load_embedding` (rather than being imported directly by `preprocess.py`). `stftpitchshift` is excluded from training extras because it is imported lazily for inference only.

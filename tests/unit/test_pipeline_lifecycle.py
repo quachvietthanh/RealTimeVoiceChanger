@@ -335,9 +335,121 @@ class PipelineLifecycleTests(unittest.TestCase):
     def test_constructor_validation(self):
         for kw in ({"sample_rate": 0}, {"chunk_duration_s": 0.0}, {"max_queue_size": 0}, {"prebuffer_duration_s": -1},
                    {"context_duration_s": 0.01}, {"crossfade_duration_s": -0.1},
-                   {"noise_suppression": NoiseSuppressionSettings(mode="max")}):
+                   {"noise_suppression": NoiseSuppressionSettings(mode="max")},
+                   {"expected_inference_s": -0.1}, {"expected_inference_s": float("nan")}):
             with self.subTest(kw=kw), self.assertRaises(ValueError):
                 make(**kw)
+
+
+class CreditOutput(FakeOutput):
+    """FakeOutput with the optional prebuffer-credit hook (0.15 s prebuffer)."""
+
+    def __init__(self):
+        super().__init__()
+        self.credits = []
+
+    def apply_prebuffer_credit(self, seconds):
+        self.credits.append((seconds, len(self.chunks)))  # and how many chunks were written before
+        return min(seconds, 0.15)
+
+
+def make_credit(converter, **kw):
+    """Pipeline with CreditOutput and a FakeInput that reports 2048-frame blocks (next chunk >= 460.8 ms)."""
+    p, inp, out = make(converter, out=CreditOutput(), **kw)
+    inp.block_size = 2048
+    return p, inp, out
+
+
+class StartupLatencyTests(unittest.TestCase):
+    def test_late_first_chunk_is_credited_once_before_its_write(self):
+        conv = FakeConverter(delay=0.3)
+        p, inp, out = make_credit(conv, expected_inference_s=0.1)
+        p.start()
+        inp.push_chunks(3)
+        self.assertTrue(wait_for(lambda: len(out.chunks) == 3, timeout=3.0))
+        p.stop()
+        self.assertEqual(len(out.credits), 1)
+        lateness, written_before = out.credits[0]
+        self.assertEqual(written_before, 0)
+        self.assertGreaterEqual(lateness, 0.3 - 0.1 - 0.05 - 0.005)
+        self.assertLess(lateness, 0.3 - 0.1 - 0.05 + 0.05)
+        self.assertAlmostEqual(p.metrics.prebuffer_credit_ms, 150.0)
+        self.assertEqual(p.metrics.expected_inference_ms, 100.0)
+
+    def test_first_chunk_within_tolerance_keeps_the_full_prebuffer(self):
+        # Processing is a little above expected (sleep + overhead), but well inside the 50 ms tolerance.
+        p, inp, out = make_credit(FakeConverter(delay=0.1), expected_inference_s=0.1)
+        p.start()
+        inp.push_chunks(2)
+        self.assertTrue(wait_for(lambda: len(out.chunks) == 2))
+        p.stop()
+        self.assertEqual(out.credits, [])
+        self.assertEqual(p.metrics.prebuffer_credit_ms, 0.0)
+
+    def test_first_chunk_finished_after_the_next_could_be_ready_is_not_credited(self):
+        # 0.5 s > 9 input blocks (460.8 ms): the worker is behind, so the full prebuffer is kept.
+        p, inp, out = make_credit(FakeConverter(delay=0.5), expected_inference_s=0.1)
+        p.start()
+        inp.push_chunks(1)
+        self.assertTrue(wait_for(lambda: len(out.chunks) == 1, timeout=3.0))
+        p.stop()
+        self.assertEqual((out.credits, p.metrics.prebuffer_credit_ms), ([], 0.0))
+
+    def test_input_without_block_size_is_not_credited(self):
+        p, inp, out = make(FakeConverter(delay=0.3), out=CreditOutput(), expected_inference_s=0.1)
+        p.start()
+        inp.push_chunks(1)
+        self.assertTrue(wait_for(lambda: len(out.chunks) == 1, timeout=3.0))
+        p.stop()
+        self.assertEqual(out.credits, [])
+
+    def test_without_expected_inference_nothing_is_credited(self):
+        p, inp, out = make_credit(FakeConverter(delay=0.3))
+        p.start()
+        inp.push_chunks(1)
+        self.assertTrue(wait_for(lambda: len(out.chunks) == 1))
+        p.stop()
+        self.assertEqual(out.credits, [])
+
+    def test_streams_without_the_hook_still_work(self):
+        p, inp, out = make(FakeConverter(delay=0.3), expected_inference_s=0.0)
+        p.start()
+        inp.push_chunks(2)
+        self.assertTrue(wait_for(lambda: len(out.chunks) == 2))
+        p.stop()
+        self.assertEqual((p.metrics.inference_errors, p.metrics.prebuffer_credit_ms), (0, 0.0))
+
+    def test_each_session_gets_its_own_credit(self):
+        p, inp, out = make_credit(FakeConverter(delay=0.3), expected_inference_s=0.1)
+        for session in (1, 2):
+            p.start()
+            inp.push_chunks(1)
+            self.assertTrue(wait_for(lambda: len(out.chunks) == session, timeout=3.0))
+            p.stop()
+            self.assertAlmostEqual(p.metrics.prebuffer_credit_ms, 150.0)
+        self.assertEqual(len(out.credits), 2)
+
+    def test_first_five_chunks_are_recorded_and_logged_once(self):
+        p, inp, out = make(FakeConverter(delay=0.01), noise_suppression=NoiseSuppressionSettings())
+        p.start()
+        with self.assertLogs("voice_changer.audio.pipeline", level="INFO") as logs:
+            for n in range(1, 8):  # one at a time: a full queue would drop chunks
+                inp.push(np.zeros(CHUNK, dtype=np.float32))
+                self.assertTrue(wait_for(lambda: len(out.chunks) == n))
+        p.stop()
+        self.assertEqual(p.metrics.total_chunks_dropped, 0)
+        rows = p.metrics.startup_chunks
+        self.assertEqual([r["seq"] for r in rows], [1, 2, 3, 4, 5])
+        for r in rows:
+            self.assertGreaterEqual(r["inference_ms"], 10.0)
+            self.assertIsNotNone(r["noise_suppression_ms"])
+            self.assertGreaterEqual(r["software_e2e_ms"], r["turnaround_ms"])
+            self.assertIn("buffer_before_write_ms", r)
+            self.assertIn("buffer_after_write_ms", r)
+        self.assertEqual(sum("startup chunks" in line for line in logs.output), 1)
+        summary = p.metrics.summary()
+        self.assertEqual(summary["startup_chunks"], rows)
+        self.assertIsNot(summary["startup_chunks"][0], rows[0])  # a copy, safe to hand to other threads
 
 
 if __name__ == "__main__":

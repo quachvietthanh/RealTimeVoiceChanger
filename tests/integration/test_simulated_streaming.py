@@ -28,6 +28,16 @@ class IdentityConverter:
         return np.asarray(audio_data, dtype=np.float32)
 
 
+class DelayedIdentityConverter:
+    def __init__(self, delays, steady_s):
+        self.delays, self.steady_s, self.calls = list(delays), steady_s, 0
+
+    def convert_chunk(self, audio_data, config=None, input_sr=SR, target_sr=None):
+        time.sleep(self.delays[self.calls] if self.calls < len(self.delays) else self.steady_s)
+        self.calls += 1
+        return np.asarray(audio_data, dtype=np.float32)
+
+
 class SimulatedStreamingTests(unittest.TestCase):
     def _stream_ramp(self, **seam_kwargs):
         seconds = 3.0
@@ -94,6 +104,68 @@ class SimulatedStreamingTests(unittest.TestCase):
         pause, speech = slice(int(SR * 5.2), int(SR * 5.8)), slice(int(SR * 4.2), int(SR * 4.8))
         self.assertLess(rms(y[pause]) / rms(noise[pause]), 10 ** (-9 / 20))  # medium floor is -12 dB
         self.assertAlmostEqual(rms(y[speech]) / rms(clean[speech] + noise[speech]), 1.0, delta=0.1)
+
+    def _stream_with_delays(self, delays, expected_s):
+        """3 s ramp through the real ring buffer; inference `delays` for the first chunks, then 0.27 s.
+
+        Seams are on without lag search, so an identity model reproduces the input exactly (see above).
+        Returns (ramp, played, pipeline); played includes the startup silence.
+        """
+        seconds = 3.0
+        ramp = (np.arange(int(SR * seconds), dtype=np.float32) + 1.0) / 1e6
+        inp = SimulatedInputStream(ramp, sample_rate=SR)
+        out = SimulatedOutputStream(sample_rate=SR, channels=2, block_size=2048, prebuffer_seconds=0.15, capture=True)
+        p = RealTimeVoiceChangerPipeline(DelayedIdentityConverter(delays, 0.27), input_stream=inp, output_stream=out,
+                                         sola_search_s=0.0, expected_inference_s=expected_s)
+        p.start()
+        self.assertTrue(inp.finished.wait(seconds + 2))
+        time.sleep(1.6)
+        self.assertEqual(p.health(), [])
+        p.stop()
+        m = p.metrics
+        self.assertEqual((m.total_chunks_dropped, m.inference_errors, m.steady_underflow_count, m.stitch_resets,
+                          m.output_overflow_count), (0, 0, 0, 0, 0))
+        self.assertEqual([r["seq"] for r in m.startup_chunks], [1, 2, 3, 4, 5])
+        return ramp, out.captured()[:, 0], p
+
+    def _check_no_sample_lost(self, ramp, played):
+        start = int(np.argmax(played > 0))  # the ramp is > 0 from its first sample: onset is not cut
+        np.testing.assert_array_equal(played[:start], 0.0)
+        np.testing.assert_allclose(played[start: start + len(ramp)], ramp, rtol=0, atol=1e-7)
+        return start / SR  # software startup delay: output clock start -> first input sample played
+
+    def test_slow_first_chunk_latency_is_offset_against_the_prebuffer(self):
+        # Without an expected time a 430 ms first chunk adds ~160 ms to the whole session; with it, the
+        # lateness beyond the 50 ms tolerance (110 ms) is taken off the 150 ms prebuffer, capped at
+        # 150 - 51.2 ms (one output block stays in reserve).
+        ramp, normal, p_normal = self._stream_with_delays([0.27], expected_s=0.27)
+        _, slow_old, p_old = self._stream_with_delays([0.43], expected_s=None)
+        _, slow_new, p_new = self._stream_with_delays([0.43], expected_s=0.27)
+        d_normal = self._check_no_sample_lost(ramp, normal)
+        d_old = self._check_no_sample_lost(ramp, slow_old)
+        d_new = self._check_no_sample_lost(ramp, slow_new)
+        self.assertEqual(p_normal.metrics.prebuffer_credit_ms, 0.0)
+        self.assertEqual(p_old.metrics.prebuffer_credit_ms, 0.0)
+        self.assertAlmostEqual(p_new.metrics.prebuffer_credit_ms, 98.8, places=6)
+        # Playback starts on a 51.2 ms output block, so each run's delay is off by up to one block, plus
+        # sleep jitter.
+        self.assertAlmostEqual(d_old - d_normal, 0.16, delta=0.08)
+        self.assertAlmostEqual(d_old - d_new, 0.0988, delta=0.08)
+        steady = lambda p: float(np.mean(p.metrics.output_buffer_occupancy_ms[2:]))  # noqa: E731
+        self.assertAlmostEqual(steady(p_old) - steady(p_normal), 160.0, delta=80.0)
+        self.assertAlmostEqual(steady(p_old) - steady(p_new), 98.8, delta=80.0)
+
+    def test_consecutive_slow_chunks_keep_the_full_prebuffer_and_do_not_underflow(self):
+        # 530 ms per chunk is slower than real time: the next chunk is already waiting when the first is
+        # written, so nothing is credited and the session behaves as without an expected time.
+        ramp, base, p_base = self._stream_with_delays([0.53, 0.53], expected_s=None)
+        d_base = self._check_no_sample_lost(ramp, base)
+        for delays in ([0.53, 0.53], [0.53, 0.53, 0.53]):
+            with self.subTest(delays=delays):
+                _, played, p = self._stream_with_delays(delays, expected_s=0.27)  # asserts 0 steady underflows
+                self.assertEqual(p.metrics.prebuffer_credit_ms, 0.0)
+                d = self._check_no_sample_lost(ramp, played)
+                self.assertAlmostEqual(d, d_base, delta=0.08)
 
     def test_device_loss_is_detected(self):
         inp = SimulatedInputStream(np.zeros(SR * 5, dtype=np.float32), sample_rate=SR)

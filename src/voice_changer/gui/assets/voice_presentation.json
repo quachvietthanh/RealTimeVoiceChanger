@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "note": "Presentation-only metadata for the desktop GUI (tagline, monogram avatar, color). It never decides whether a profile can be loaded: config/voice_profiles.json and the backend's ProfileSummary/EngineStatus are authoritative. Avatars are original monograms; 'avatar' may name a local PNG under gui/assets/ whose usage rights have been verified (none yet).",
+  "voices": {
+    "vctk_p231": {
+      "tagline_vi": "Giọng nữ tiếng Anh (bộ dữ liệu VCTK, người nói p231). Bản mẫu kỹ thuật dùng để đo hiệu năng.",
+      "monogram": "EN",
+      "color": "#0284c7"
+    },
+    "voice_a_preview": {
+      "tagline_vi": "Giọng nữ miền Bắc. Bản xem trước đã bị thu hồi.",
+      "monogram": "VA",
+      "color": "#475569"
+    },
+    "voice_b_preview": {
+      "tagline_vi": "Giọng nữ ấm, nhẹ (nguồn thu thiên tiếng Anh). Bản xem trước, chờ chủ dự án nghe duyệt.",
+      "monogram": "VB",
+      "color": "#7c3aed"
+    },
+    "jett": {
+      "tagline_vi": "Mô hình RVC của bên thứ ba mô phỏng giọng nhân vật Jett (tiếng Anh). Chỉ thử nghiệm cá nhân.",
+      "monogram": "JT",
+      "color": "#be185d"
+    },
+    "sage": {
+      "tagline_vi": "Mô hình RVC của bên thứ ba mô phỏng giọng nhân vật Sage (tiếng Anh). Chỉ thử nghiệm cá nhân.",
+      "monogram": "SG",
+      "color": "#047857"
+    }
+  }
+}

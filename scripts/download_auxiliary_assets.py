@@ -116,23 +116,33 @@ def verify_asset_compatibility(asset_type: str, file_path: Path) -> tuple[bool, 
             return True, "Valid HubertModelWithFinalProj config"
 
         elif asset_type == "rmvpe":
-            state = torch.load(str(file_path), map_location="cpu")
-            if not isinstance(state, dict):
-                return False, "Not a valid PyTorch dictionary checkpoint"
+            # Hash-verified, weights-only load (Applio's RMVPE0Predictor unpickles without restriction).
+            src_dir = REPO_ROOT / "src"
+            if str(src_dir) not in sys.path:
+                sys.path.insert(0, str(src_dir))
+            from voice_changer.conversion.rvc.rmvpe import VerifiedRMVPE0Predictor, load_rmvpe_state_dict
+
+            state = load_rmvpe_state_dict(file_path)
             keys = list(state.keys())
             if not any("mel_extractor" in k or "unet" in k or "conv" in k for k in keys):
                 return False, f"Missing expected RMVPE layers. Sample keys: {keys[:5]}"
 
-            if str(APPLIO_ROOT) not in sys.path:
-                sys.path.insert(0, str(APPLIO_ROOT))
-            from rvc.lib.predictors.RMVPE import RMVPE0Predictor
-
-            predictor = RMVPE0Predictor(str(file_path), is_half=False, device="cpu")
+            predictor = VerifiedRMVPE0Predictor(str(file_path), is_half=False, device="cpu")
             del predictor
-            return True, "Valid RMVPE0Predictor checkpoint (loaded successfully on CPU)"
+            return True, "Valid RMVPE0Predictor checkpoint (verified, weights-only, loaded on CPU)"
 
         elif asset_type == "contentvec_weights":
-            state = torch.load(str(file_path), map_location="cpu")
+            # Hash-verified, weights-only load of the same bytes (the plain torch.load here was unrestricted).
+            import io
+
+            src_dir = REPO_ROOT / "src"
+            if str(src_dir) not in sys.path:
+                sys.path.insert(0, str(src_dir))
+            from voice_changer.conversion.rvc.assets import read_verified_bytes
+            from voice_changer.conversion.rvc.contentvec import CONTENTVEC_WEIGHTS_SHA256
+
+            data = read_verified_bytes(file_path, CONTENTVEC_WEIGHTS_SHA256, "ContentVec weights")
+            state = torch.load(io.BytesIO(data), map_location="cpu", weights_only=True)
             if not isinstance(state, dict):
                 return False, "Not a valid PyTorch dictionary checkpoint"
             keys = list(state.keys())

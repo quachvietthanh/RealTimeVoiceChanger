@@ -4,45 +4,57 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
+from typing import Optional
+
+from voice_changer.service import EngineState
 
 
 class Colors:
     """Refined color palette tokens with high contrast and modern aesthetics."""
 
-    # Backgrounds
-    BG_DARK = "#0d131f"        # Deep slate background
-    BG_SURFACE = "#161f2e"     # Card & container background
-    BG_ELEVATED = "#1f2b3e"    # Input background / elevated surfaces
-    BG_HOVER = "#2a3a52"       # Hover states
+    # Backgrounds - Refined Charcoal Surfaces
+    BG_DARK = "#121118"        # Deep charcoal canvas
+    BG_SIDEBAR = "#16151f"     # Distinct charcoal sidebar
+    BG_SURFACE = "#1c1a27"     # Card & container background
+    BG_ELEVATED = "#232132"    # Input background / elevated surfaces
+    BG_CARD = "#201d2e"        # Voice cards
+    BG_CARD_HOVER = "#2a263c"  # Voice card hover state
+    BG_CARD_ACTIVE = "#2d2745" # Voice card selected state
+    BG_HOVER = "#2c283e"       # General hover states
 
     # Borders & Dividers
-    BORDER = "#283548"         # Subtle card border
-    BORDER_LIGHT = "#3d4f68"   # Active focus border
+    BORDER = "#2e2a40"         # Subtle card border
+    BORDER_SUBTLE = "#211e2f"  # Hairline dividers
+    BORDER_LIGHT = "#4c4569"   # Active focus border
+    BORDER_ACTIVE = "#7c3aed"  # Selected item border (Purple)
 
-    # Accent Colors
-    PRIMARY = "#3b82f6"        # Modern Blue / Indigo
-    PRIMARY_HOVER = "#2563eb"  # Darker Blue
-    PRIMARY_LIGHT = "#60a5fa"  # Soft Blue highlight
+    # Accent Colors - Controlled Purple & Precision Cyan
+    PRIMARY = "#7c3aed"        # Controlled Royal Purple
+    PRIMARY_HOVER = "#6d28d9"  # Deeper Purple
+    PRIMARY_LIGHT = "#a78bfa"  # Soft Lavender highlight
 
-    SUCCESS = "#10b981"        # Emerald green
-    SUCCESS_HOVER = "#059669"  # Darker emerald
+    ACCENT_CYAN = "#06b6d4"    # Precision Pro-Audio Cyan
+    ACCENT_PURPLE = "#8b5cf6"  # AI Studio Purple
+
+    SUCCESS = "#047857"        # Emerald green (WCAG AA compliant > 5.4:1 with white text)
+    SUCCESS_HOVER = "#065f46"  # Darker emerald (> 7.6:1 with white text)
     SUCCESS_BG = "#064e3b"     # Dark green container
-    SUCCESS_TEXT = "#6ee7b7"   # Bright emerald text
+    SUCCESS_TEXT = "#6ee7b7"   # Bright emerald text (> 6.3:1 on SUCCESS_BG)
 
     WARNING = "#f59e0b"        # Amber warning
     WARNING_BG = "#451a03"     # Dark amber container
     WARNING_TEXT = "#fcd34d"   # Bright amber text
 
-    DANGER = "#f43f5e"         # Modern Rose/Crimson
-    DANGER_HOVER = "#e11d48"   # Darker Rose
+    DANGER = "#be123c"         # Rose/Crimson (WCAG AA compliant > 6.2:1 with white text)
+    DANGER_HOVER = "#9f1239"   # Darker Rose (> 8.0:1 with white text)
     DANGER_BG = "#4c0519"      # Dark rose container
-    DANGER_TEXT = "#fda4af"    # Bright rose text
+    DANGER_TEXT = "#fda4af"    # Bright rose text (> 8.3:1 on BG_ELEVATED)
 
     # Text Colors (WCAG AA Compliant High Contrast)
-    TEXT_PRIMARY = "#f8fafc"   # High contrast crisp white
+    TEXT_PRIMARY = "#f8fafc"   # High contrast crisp white (> 12:1)
     TEXT_SECONDARY = "#cbd5e1" # Soft slate (high contrast > 7:1)
     TEXT_MUTED = "#94a3b8"     # Subtle supporting text (high contrast > 4.5:1)
-    TEXT_DISABLED = "#64748b"  # Disabled text
+    TEXT_DISABLED = "#64748b"  # Disabled control state text
     TEXT_ON_PRIMARY = "#ffffff"# Pure white text on accents
 
 
@@ -51,16 +63,20 @@ class Fonts:
 
     FAMILY = "Segoe UI"
 
-    TITLE = (FAMILY, 15, "bold")
+    HERO = (FAMILY, 20, "bold")
+    DISPLAY = (FAMILY, 16, "bold")
+    TITLE = (FAMILY, 14, "bold")
     SUBTITLE = (FAMILY, 12, "bold")
     HEADING = (FAMILY, 11, "bold")
     BODY = (FAMILY, 10, "normal")
     BODY_BOLD = (FAMILY, 10, "bold")
     CAPTION = (FAMILY, 9, "normal")
     CAPTION_BOLD = (FAMILY, 9, "bold")
-    BADGE = (FAMILY, 9, "bold")
+    BADGE = (FAMILY, 8, "bold")
     METRIC_VAL = (FAMILY, 16, "bold")
     METRIC_LABEL = (FAMILY, 9, "bold")
+    BUTTON = (FAMILY, 10, "bold")
+    CODE = ("Consolas", 9, "normal")
 
 
 def setup_theme(root: tk.Tk) -> ttk.Style:
@@ -71,8 +87,10 @@ def setup_theme(root: tk.Tk) -> ttk.Style:
 
     # General Frames
     style.configure("TFrame", background=Colors.BG_DARK)
+    style.configure("Sidebar.TFrame", background=Colors.BG_SIDEBAR)
     style.configure("Surface.TFrame", background=Colors.BG_SURFACE)
     style.configure("Elevated.TFrame", background=Colors.BG_ELEVATED)
+    style.configure("Card.TFrame", background=Colors.BG_CARD)
 
     # General Labels
     style.configure("TLabel", background=Colors.BG_DARK, foreground=Colors.TEXT_PRIMARY, font=Fonts.BODY)
@@ -89,7 +107,8 @@ def setup_theme(root: tk.Tk) -> ttk.Style:
         foreground=Colors.TEXT_ON_PRIMARY,
         font=Fonts.BODY_BOLD,
         borderwidth=0,
-        focuscolor=Colors.PRIMARY,
+        focuscolor=Colors.TEXT_ON_PRIMARY,
+        focusthickness=2,
         padding=(16, 8),
     )
     style.map(
@@ -105,7 +124,8 @@ def setup_theme(root: tk.Tk) -> ttk.Style:
         foreground=Colors.TEXT_ON_PRIMARY,
         font=Fonts.HEADING,
         borderwidth=0,
-        focuscolor=Colors.SUCCESS,
+        focuscolor=Colors.TEXT_ON_PRIMARY,
+        focusthickness=2,
         padding=(18, 10),
     )
     style.map(
@@ -121,7 +141,8 @@ def setup_theme(root: tk.Tk) -> ttk.Style:
         foreground=Colors.TEXT_ON_PRIMARY,
         font=Fonts.HEADING,
         borderwidth=0,
-        focuscolor=Colors.DANGER,
+        focuscolor=Colors.TEXT_ON_PRIMARY,
+        focusthickness=2,
         padding=(18, 10),
     )
     style.map(
@@ -129,6 +150,26 @@ def setup_theme(root: tk.Tk) -> ttk.Style:
         background=[("active", Colors.DANGER_HOVER), ("disabled", Colors.BG_HOVER)],
         foreground=[("disabled", Colors.TEXT_DISABLED)],
     )
+
+    # Studio's single primary action: the same three colors, larger.
+    for name, bg, hover in (("Primary", Colors.PRIMARY, Colors.PRIMARY_HOVER),
+                            ("Success", Colors.SUCCESS, Colors.SUCCESS_HOVER),
+                            ("Danger", Colors.DANGER, Colors.DANGER_HOVER)):
+        style.configure(
+            f"Hero{name}.TButton",
+            background=bg,
+            foreground=Colors.TEXT_ON_PRIMARY,
+            font=(Fonts.FAMILY, 13, "bold"),
+            borderwidth=0,
+            focuscolor=Colors.TEXT_ON_PRIMARY,
+            focusthickness=2,
+            padding=(24, 14),
+        )
+        style.map(
+            f"Hero{name}.TButton",
+            background=[("active", hover), ("disabled", Colors.BG_HOVER)],
+            foreground=[("disabled", Colors.TEXT_DISABLED)],
+        )
 
     # Secondary Outline Button
     style.configure(
@@ -138,7 +179,8 @@ def setup_theme(root: tk.Tk) -> ttk.Style:
         font=Fonts.CAPTION_BOLD,
         borderwidth=1,
         bordercolor=Colors.BORDER,
-        focuscolor=Colors.BG_ELEVATED,
+        focuscolor=Colors.ACCENT_CYAN,
+        focusthickness=2,
         padding=(10, 5),
     )
     style.map(
@@ -182,6 +224,15 @@ def setup_theme(root: tk.Tk) -> ttk.Style:
         foreground=[("selected", Colors.TEXT_PRIMARY), ("active", Colors.TEXT_PRIMARY)],
     )
 
+    # Hidden Notebook (tab headers hidden, page switching controlled by Sidebar)
+    try:
+        style.layout("Hidden.TNotebook", [("Notebook.client", {"sticky": "nswe"})])
+        style.layout("Hidden.TNotebook.Tab", [])
+        style.configure("Hidden.TNotebook", background=Colors.BG_DARK, borderwidth=0)
+    except Exception:
+        pass
+
+
     # Sliders (Scale)
     style.configure(
         "Horizontal.TScale",
@@ -198,7 +249,7 @@ def setup_theme(root: tk.Tk) -> ttk.Style:
         background=Colors.BG_SURFACE,
         foreground=Colors.TEXT_PRIMARY,
         font=Fonts.BODY_BOLD,
-        focuscolor=Colors.BG_SURFACE,
+        focuscolor=Colors.ACCENT_CYAN,
     )
     style.map(
         "TCheckbutton",
@@ -209,4 +260,53 @@ def setup_theme(root: tk.Tk) -> ttk.Style:
     # Separator
     style.configure("TSeparator", background=Colors.BORDER)
 
+    # Secondary Outline Button
+    style.configure(
+        "AccentOutline.TButton",
+        background=Colors.BG_CARD,
+        foreground=Colors.PRIMARY_LIGHT,
+        font=Fonts.CAPTION_BOLD,
+        borderwidth=1,
+        bordercolor=Colors.PRIMARY,
+        focuscolor=Colors.PRIMARY_LIGHT,
+        focusthickness=2,
+        padding=(12, 6),
+    )
+    style.map(
+        "AccentOutline.TButton",
+        background=[("active", Colors.PRIMARY), ("disabled", Colors.BG_SURFACE)],
+        foreground=[("active", Colors.TEXT_ON_PRIMARY), ("disabled", Colors.TEXT_DISABLED)],
+    )
+
     return style
+
+
+# Authoritative Engine State Visual Presentation (label, background_color, foreground_color)
+ENGINE_STATE_VISUALS: dict[EngineState, tuple[str, str, str]] = {
+    EngineState.IDLE: ("● CHƯA NẠP GIỌNG", Colors.BG_ELEVATED, Colors.TEXT_MUTED),
+    EngineState.LOADING: ("● ĐANG NẠP…", Colors.WARNING_BG, Colors.WARNING_TEXT),
+    EngineState.READY: ("● SẴN SÀNG", Colors.SUCCESS_BG, Colors.SUCCESS_TEXT),
+    EngineState.STARTING: ("● ĐANG KHỞI ĐỘNG…", Colors.WARNING_BG, Colors.WARNING_TEXT),
+    EngineState.RUNNING: ("● ĐANG CHUYỂN GIỌNG", Colors.SUCCESS, Colors.TEXT_ON_PRIMARY),
+    EngineState.STOPPING: ("● ĐANG DỪNG…", Colors.WARNING_BG, Colors.WARNING_TEXT),
+    EngineState.ERROR: ("● CÓ LỖI", Colors.DANGER_BG, Colors.DANGER_TEXT),
+}
+
+
+def get_engine_state_visual(state: Optional[EngineState]) -> tuple[str, str, str]:
+    """Return authoritative (label, bg_color, fg_color) for an engine state."""
+    if state in ENGINE_STATE_VISUALS:
+        return ENGINE_STATE_VISUALS[state]
+    return ENGINE_STATE_VISUALS[EngineState.IDLE]
+
+
+def get_rtf_color(rtf: float) -> str:
+    """Text color for a real-time factor; the same thresholds in Voice Studio and Diagnostics.
+
+    RTF = inference time / chunk length: >= 1.0 cannot keep up with real time, near 1.0 has no headroom.
+    """
+    if rtf < 0.85:
+        return Colors.SUCCESS_TEXT
+    if rtf <= 1.0:
+        return Colors.WARNING_TEXT
+    return Colors.DANGER_TEXT

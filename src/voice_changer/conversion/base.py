@@ -60,8 +60,18 @@ class VoiceConverter(Protocol):
     to be usable by the streaming audio pipeline.
     """
 
-    def load_model(self, model_path: str, index_path: Optional[str] = None) -> None:
-        """Load model weights and optional feature retrieval index."""
+    def load_model(
+        self,
+        model_path: str,
+        index_path: Optional[str] = None,
+        *,
+        model_sha256: Optional[str] = None,
+        index_sha256: Optional[str] = None,
+    ) -> None:
+        """Load model weights and optional feature retrieval index.
+
+        When a SHA-256 is given, the converter must check it on the bytes it loads and raise on mismatch.
+        """
         ...
 
     def convert(self, audio_chunk: bytes, config: ConversionConfig) -> bytes:

@@ -1,184 +1,120 @@
 # Hướng dẫn Ứng dụng Desktop GUI — RealTimeVoiceChanger
 
-Tài liệu hướng dẫn vận hành, kiến trúc, kiểm định và bố cục giao diện đồ họa người dùng (Desktop GUI) của dự án **RealTimeVoiceChanger**.
+Tài liệu mô tả cách khởi chạy, bố cục, luồng thao tác và kiểm thử của giao diện desktop của **RealTimeVoiceChanger**. Mọi hành vi mô tả ở đây đã được kiểm tra bằng test tự động không cần GPU/thiết bị âm thanh (xem mục 6); những gì chưa kiểm tra được ghi rõ.
 
 ---
 
 ## 1. Giới thiệu & Khởi chạy
 
-Desktop GUI được xây dựng hoàn toàn bằng ngôn ngữ Python với thư viện chuẩn `tkinter` và `ttk`, áp dụng bảng màu Dark Mode hiện đại, độ tương phản cao, hỗ trợ hiển thị tối ưu trên Windows (DPI-aware: 100%, 125%, 150%), kết nối trực tiếp với backend service thực (`VoiceChangerService`) theo đúng hợp đồng `docs/gui-backend-contract.md`.
-
-### Cách khởi chạy ứng dụng:
-
-Chạy ứng dụng từ thư mục gốc của repository với môi trường ảo `.venv`:
+Desktop GUI dùng `tkinter`/`ttk` của thư viện chuẩn, giao diện tối, DPI-aware trên Windows, và chỉ gọi backend qua `VoiceChangerService` theo `docs/gui-backend-contract.md`. GUI không tự suy luận, không tự đọc registry giọng và không tự quyết định giọng nào nạp được.
 
 ```powershell
-# Cách 1: Sử dụng launcher script chuyên dụng
+# Cách 1: launcher
 .venv\Scripts\python scripts/run_gui.py
 
-# Cách 2: Sử dụng entry point chính của package
+# Cách 2: entry point của package
 .venv\Scripts\python -m voice_changer.main --gui
 
-# Hoặc nếu package đã được cài đặt ở chế độ editable (pip install -e .)
+# Nếu đã cài editable (pip install -e .)
 voice-changer
 ```
 
-*(Lưu ý: Thêm tham số `--cli` nếu muốn chạy giao diện dòng lệnh: `voice-changer --cli`).*
+*(Thêm `--cli` để chạy giao diện dòng lệnh.)*
 
 ---
 
-## 2. Thiết kế Giao diện & Trải nghiệm Người dùng (Visual Design)
+## 2. Thiết kế & hiển thị
 
-Phiên bản GUI được thiết kế lại toàn diện để mang lại trải nghiệm chuyên nghiệp, thoáng đãng, dễ quét mắt (scannable) và không bị cắt chữ khi co giãn:
+### 2.1. Màu, chữ, biểu tượng
+- Bảng màu và cỡ chữ nằm trong `src/voice_changer/gui/theme.py` (`Colors`, `Fonts`). Cỡ chữ tính bằng point, không bằng pixel. Font: `Segoe UI`, đường dẫn/trace: `Consolas`.
+- **Logo/biểu tượng ứng dụng** là thiết kế gốc của dự án: ô vuông bo góc nền tối với các vạch sóng âm chuyển màu tím → xanh ngọc. Tệp được sinh bằng `scripts/generate_app_icon.py` (Pillow) vào `src/voice_changer/gui/assets/icons/`: `app_icon_{16,20,24,32,40,48,64,128,256}.png`, `app_icon.ico`, `logo.svg`. Cửa sổ dùng các PNG này qua `iconphoto` và `.ico` qua `iconbitmap`; thiếu tệp thì chỉ ghi log và ứng dụng vẫn chạy. Sidebar dùng PNG gần nhất với `px(32)`; nếu không có thì hiển thị chữ "RT".
+- **Avatar giọng** là monogram gốc (chữ viết tắt trên nền màu). Không tải ảnh từ mạng, không đóng gói hình ảnh của bên thứ ba. `voice_presentation.json` có thể trỏ tới một PNG cục bộ trong `gui/assets/` (đường dẫn URL, đường dẫn tuyệt đối và đường dẫn ra ngoài thư mục assets đều bị từ chối); hiện chưa có ảnh nào.
 
-### 2.1. Hệ màu & Kiểu chữ (Theme & Typography)
-- **Bảng màu Restrained Dark Mode**:
-  * Nền chính (`BG_DARK`): `#0d131f`
-  * Khối nội dung / thẻ (`BG_SURFACE`): `#161f2e`
-  * Phần tử tương tác / thẻ nổi (`BG_ELEVATED`): `#1f2b3e`
-  * Màu nhấn chủ đạo (`PRIMARY`): `#3b82f6` (Blue hiện đại, tương phản chuẩn WCAG AA)
-  * Màu trạng thái tích cực (`SUCCESS`): `#10b981` (Emerald green)
-  * Màu cảnh báo (`WARNING`): `#f59e0b` (Amber)
-  * Màu lỗi / dừng (`DANGER`): `#f43f5e` (Rose red)
-- **Typography chuẩn Windows**:
-  * Sử dụng font hệ thống `Segoe UI` với kích cỡ từ 9.5pt (chú thích) đến 16pt (tiêu đề chính).
-  * Độ tương phản chữ vượt trội: Văn bản chính `#f8fafc` (trắng sáng), văn bản phụ `#cbd5e1` (xám nhạt), chú thích `#94a3b8`.
-  * Loại bỏ hoàn toàn các khối chữ li ti, dày đặc khó đọc.
-
-### 2.2. Xử lý DPI & Co giãn kích thước cửa sổ (Responsive Layout)
-- **Kích thước khuyến nghị**: `1080 x 760` (mặc định), kích thước tối thiểu an toàn: `960 x 680`.
-- **Hỗ trợ Windows DPI**: Gọi trực tiếp `shcore.SetProcessDpiAwareness(1)` trên Windows để các font chữ và thanh trượt hiển thị sắc nét ở mọi mức scaling (100%, 125%, 150%).
-- **Chống tràn & cắt chữ (Dynamic Label Wrapping)**: Các nhãn mô tả dài sử dụng sự kiện `<Configure>` động (`event.width - padding`) thay vì cố định `wraplength`, tự động dàn dòng mượt mà khi người dùng phóng to hoặc thay đổi kích thước cửa sổ.
-- **Thanh cuộn thông minh**: Cả hai tab (Dashboard và Hướng dẫn kết nối) đều được bọc trong `Canvas` cuộn tự động chỉ khi nội dung vượt quá chiều cao cửa sổ.
+### 2.2. DPI & co giãn
+- Cửa sổ mặc định `1140 x 780`, tối thiểu `980 x 680` ở 100%.
+- `launch_gui()` gọi `SetProcessDpiAwareness(1)` (system-aware) *trước* `tk.Tk()`; mọi kích thước pixel cố định (cửa sổ, sidebar 240, avatar Studio 72, logo, wraplength cố định) đi qua `px()`. Không dùng per-monitor DPI.
+- Đã kiểm tra trực quan ở 125% Windows thật **trước** đợt thiết kế lại này; bố cục mới **chưa** được xem trực quan trên màn hình thật (mới kiểm tra bằng test headless và mô phỏng 150% bằng `tk scaling`).
+- Trang dài có thanh cuộn; cột Studio căn giữa và không rộng quá `px(760)`.
 
 ---
 
-## 3. Bố cục & Các khối chức năng chính (Main Dashboard)
+## 3. Điều hướng
 
-Giao diện tổ chức theo quy trình thao tác tự nhiên 5 bước của người dùng:
-1. **Chọn hồ sơ giọng nói**.
-2. **Chọn thiết bị Micro & Loa / Cáp ảo**.
-3. **Cân chỉnh cao độ & tham số suy luận**.
-4. **Bắt đầu / Dừng chuyển đổi**.
-5. **Theo dõi độ trễ & độ ổn định thời gian thực**.
+Sidebar (chỉ để điều hướng, không hiển thị trạng thái engine):
+1. `🎙️ Studio` — chọn giọng, nạp giọng, bắt đầu/dừng.
+2. `🎭 Thư viện giọng` — tất cả giọng đã đăng ký và bộ sưu tập dự kiến.
+3. `🔌 Âm thanh & Kết nối` — nơi duy nhất chọn micro/ngõ ra, cùng hướng dẫn Discord/OBS/game.
+4. (dưới cùng) `🛠️ Nâng cao / Khắc phục sự cố` — số liệu chi tiết, thông số luồng, lỗi gần nhất, file log.
 
-### Khối 1: Hồ sơ giọng nói (Voice Profiles)
-- Danh sách thả xuống rõ ràng, tự động chọn profile mặc định (`vctk_p231`).
-- **Huy hiệu thẩm định chất lượng duy nhất & chuẩn xác**:
-  * `ℹ️ BẢN MẪU KỸ THUẬT`: Dành cho `vctk_p231` (Tiếng Anh, checkpoint mẫu dùng để nghiệm thu pipeline).
-  * `⚠️ THỬ NGHIỆM (CHỜ DUYỆT)`: Dành cho `voice_a_preview` (Người nói A, e50) và `voice_b_preview` (Người nói B, e25). Không tự động thăng hạng hay gán nhãn chính thức khi chưa được Project Owner phê duyệt.
-  * `✓ ĐÃ PHÊ DUYỆT`: Chỉ hiển thị khi trạng thái là `approved`.
-- **Tình trạng tài nguyên**: Hiển thị rõ ràng trạng thái tệp checkpoint `.pth` và tệp chỉ mục `.index`.
-- Nút bấm **"Nạp mô hình vào GPU"** (`Primary.TButton`) kèm phản hồi trực quan khi đang tải VRAM.
-
-### Khối 2: Thiết bị âm thanh (Audio Devices)
-- Phân định rõ ràng:
-  * **Microphone đầu vào**: Nhận dạng tên thiết bị và chuẩn driver (`[MME]`, `[DirectSound]`, `[WASAPI]`).
-  * **Thiết bị phát âm thanh đầu ra**: Tự động nhận diện cáp ảo và đánh dấu nổi bật `⭐ [Cáp ảo]` đối với các thiết bị như `CABLE Input`.
-- **Cảnh báo tương thích WASAPI**: Hiển thị cảnh báo trực quan ngắn gọn khi phát hiện thiết bị dùng WASAPI (nguy cơ lỗi tần số mẫu 40 kHz với PortAudio).
-- Tự động ghi nhớ thiết bị đã chọn theo cặp định danh `(device_name, host_api)` tại `%LOCALAPPDATA%\RealTimeVoiceChanger\gui_settings.json`.
-- Nút **"🔄 Làm mới"** danh sách thiết bị khi người dùng cắm thêm tai nghe hoặc micro mới.
-
-### Khối 3: Khử tiếng ồn microphone (Microphone Noise Suppression)
-- Nằm ngay dưới khối Thiết bị âm thanh, xử lý tín hiệu micro đầu vào **trước khi đưa vào chuyển đổi giọng nói RVC**.
-- **Điều khiển BẬT/TẮT rõ ràng**:
-  * **Mặc định là TẮT (OFF)** theo đúng mặc định của backend. Không tự động kích hoạt khi mở ứng dụng.
-  * Hiển thị trạng thái backend thực tế: `● ĐANG TẮT`, `● ĐÃ BẬT (CHỜ STREAMING)`, `● ĐANG LỌC TIẾNG ỒN`, hoặc `⚠️ BỘ LỌC TỰ NGẮT DO LỖI`.
-- **3 chế độ khử ồn chuẩn backend (Wiener Gain Floor)**:
-  * `Nhẹ (-6 dB)` (`light`): Phòng yên tĩnh, bảo toàn tối đa các âm gió và giọng thì thào.
-  * `Vừa (-12 dB)` (`medium` - Chế độ chuẩn): Phù hợp tiếng quạt gió máy tính hoặc tiếng ù nền thông thường.
-  * `Mạnh (-18 dB)` (`strong`): Dành cho môi trường ồn lớn hoặc quạt tản nhiệt mạnh.
-- **Độ trễ & Hiệu năng thực tế**:
-  * Thêm độ trễ cố định `+20.0 ms` (1 frame STFT 20 ms ở 40 kHz), giữ nguyên dù BẬT hay TẮT để không làm trễ nhịp âm thanh.
-  * Hoạt động 100% trên CPU (khoảng 0.3–0.5 ms mỗi chunk 500 ms), không tiêu tốn tài nguyên GPU VRAM.
-- **Cảnh báo âm sắc**: Cảnh báo người dùng rằng mức khử ồn quá mạnh có thể ảnh hưởng đến phụ âm vô thanh, âm gió và tiếng thì thào tự nhiên.
-- **Xử lý sự cố & Tự phục hồi**: Nếu gặp 3 lỗi liên tiếp trong phiên streaming, bộ lọc tự ngắt (`failed=True`) để không làm hỏng âm thanh đầu ra; người dùng có thể nhấn nút **"🔄 Kích hoạt lại bộ lọc"** bất kỳ lúc nào để khởi động lại.
-
-### Khối 4: Tinh chỉnh giọng (Live Conversion Tuning)
-- Cung cấp 4 thanh trượt được căn chỉnh rộng rãi, giá trị số hiển thị nổi bật, độ tương phản cao:
-  * **Độ dịch cao độ (Pitch Shift)**: Từ `-24` đến `+24` bán cung (hiển thị kèm dấu `+` và đơn vị `bán cung`, khuyên dùng Nam ➔ Nữ: `+12` đến `+16`).
-  * **Tỷ lệ Index (Feature Retrieval)**: Từ `0.00` đến `1.00` (bước nhảy `0.05`, pha trộn đặc trưng người nói).
-  * **Bán kính lọc trung vị (Median Filter)**: Từ `0` đến `7` (bước nhảy `1`, làm mượt cao độ, giảm run giọng).
-  * **Bảo vệ âm thanh / Hơi thở (Protect)**: Từ `0.00` đến `0.50` (bảo vệ phụ âm vô thanh và tiếng thở tự nhiên).
-- **Áp dụng tức thì**: Kéo thanh trượt khi đang streaming sẽ áp dụng ngay ở chunk tiếp theo (độ trễ <= 0.5s) mà không cần khởi động lại luồng âm thanh.
-- Nút **"↩️ Mặc định"**: Khôi phục nhanh về cấu hình khuyến nghị của Profile đang chọn.
-- Chú thích thuật toán nhận diện cao độ: Cố định `RMVPE (Mặc định chuẩn dự án)`.
-
-### Khối 4: Trạng thái & Đo lường thời gian thực (Controls & Real-Time Metrics)
-- **Huy hiệu trạng thái có chấm màu (Status Dot)**:
-  * `● CHƯA NẠP MODEL` (Màu xám)
-  * `● ĐANG NẠP GPU...` (Màu hổ phách)
-  * `● SẴN SÀNG` (Màu xanh ngọc)
-  * `● ĐANG CHẠY (STREAMING)` (Màu xanh lá rực rỡ)
-  * `● LỖI HỆ THỐNG` (Màu đỏ tươi)
-- **Nút hành động chính (Start/Stop)**: Nổi bật, cân đối, kích thước vừa phải, chuyển đổi mượt mà giữa `▶ BẮT ĐẦU CHUYỂN ĐỔI` (`Success.TButton`) và `⏹ DỪNG CHUYỂN ĐỔI` (`Danger.TButton`).
-- **Lưới thẻ chỉ số hiệu năng (6 Metric Cards)**:
-  1. **RTF (Real-Time Factor)**: Tỷ lệ suy luận thời gian thực (đổi màu tự động: Xanh `< 0.85`, Vàng `0.85–1.00`, Đỏ `> 1.00`).
-  2. **GPU Suy luận**: Thời gian inference trung bình trên GPU (ms).
-  3. **Độ trễ phần mềm**: Ước tính độ trễ xử lý âm thanh đầu cuối (Chunk + Inference + Output Buffer).
-  4. **Buffer phát lại**: Dung lượng buffer âm thanh sẵn sàng phát (ms).
-  5. **Chunks (Xử lý / Rơi)**: Số lượng chunk đã hoàn thành / số chunk bị loại bỏ.
-  6. **Gián đoạn âm**: Đếm số lần âm thanh bị đứt đoạn (Underflows - mục tiêu luôn là `0`).
-- **Hộp thoại lỗi thông minh**: Khi xảy ra sự cố (ngắt kết nối micro, thiết bị bận), hiển thị thông điệp tiếng Việt thân thiện, gợi ý xử lý và nút "Xem chi tiết kỹ thuật" để tra cứu stack trace.
+Phần đầu sidebar: logo, tên "RealTimeVoiceChanger" và phiên bản đọc từ metadata gói / `pyproject.toml` (không hardcode). Đầu trang chỉ có tiêu đề và một dòng mô tả của trang hiện tại.
 
 ---
 
-## 4. Hướng dẫn kết nối Cáp ảo, Discord & OBS (Tab Hướng dẫn)
+## 4. Các trang
 
-Tab 2 được tái cấu trúc thành lưới các bước trực quan (Step Grid) 2 cột, loại bỏ văn bản dồn cục, dễ theo dõi:
+### 4.1. Studio (`studio`)
+Một cột, theo thứ tự:
+1. **Giọng đang chọn** (`ProfilesPanel`): avatar, tên, mô tả ngắn (từ `gui/assets/voice_presentation.json`), nhãn trạng thái, ngôn ngữ, nhãn quyền dữ liệu (nếu registry có), và một câu về khả năng sử dụng. Ô "Giọng:" chỉ liệt kê giọng mà backend báo `selectable` (cộng với giọng đang chọn). Liên kết "Thư viện giọng →".
+2. **Thẻ hành động** (`ControlsPanel`): pill trạng thái engine, **một** nút chính đổi theo trạng thái thật:
 
-### 4.1. Sơ đồ luồng tín hiệu (Signal Routing Flow)
-```
-[Microphone thực] ──➔ [RealTimeVoiceChanger] ──➔ [CABLE Input (Phát ra Cáp ảo)]
-                                                         │
-                                                         ▼
-[Discord / OBS / Game] ◄── [CABLE Output (Thu từ Cáp ảo)] ◄┘
-```
+   | Trạng thái | Giọng đang chọn | Nút |
+   |---|---|---|
+   | IDLE / READY / ERROR | chưa được nạp, nạp được | **Nạp giọng** |
+   | READY | đã nạp (theo `EngineStatus`) | **▶ Bắt đầu chuyển giọng** |
+   | RUNNING | bất kỳ | **■ Dừng** (+ nút phụ "Dừng phiên và chuyển sang …" nếu đang chọn giọng khác) |
+   | LOADING / STARTING / STOPPING | — | nút bận, bị vô hiệu |
+   | ERROR | giọng đã nạp | **↻ Thử lại** (dừng phiên lỗi rồi start lại) |
+   | — | đã thu hồi / chưa có mô hình / thiếu tệp | vô hiệu, không bao giờ nạp |
 
-### 4.2. Các bước cấu hình chi tiết (4 Bước chuẩn)
-- **Bước 1: Cài đặt Driver VB-Audio CABLE**: Tải từ trang chủ VB-Audio, chạy Setup dưới quyền Administrator và khởi động lại Windows.
-- **Bước 2: Cấu hình RealTimeVoiceChanger**:
-  * Input = Microphone thực (ví dụ: Microphone USB / Realtek Audio).
-  * Output = CABLE Input (VB-Audio Virtual Cable).
-- **Bước 3: Cấu hình Discord**:
-  * Vào *User Settings ➔ Voice & Video*.
-  * Input Device = **CABLE Output (VB-Audio Virtual Cable)**.
-  * Output Device = Tai nghe thực tế của bạn.
-  * **Quan trọng**: Tắt tính năng *Noise Suppression (Krisp)* và *Echo Cancellation* để tránh làm biến dạng âm sắc giọng nữ đã chuyển đổi.
-- **Bước 4: Cấu hình OBS Studio**:
-  * Thêm nguồn âm thanh *Audio Input Capture*.
-  * Chọn Device = **CABLE Output (VB-Audio Virtual Cable)**.
-  * Điều chỉnh âm lượng và bật tính năng *Monitor and Output* nếu cần nghe lại.
+   **Chọn giọng không bao giờ tự nạp.** Chỉ nút "Nạp giọng" (hoặc lần nạp tự động lúc khởi động giọng do backend `resolve_profile_id()` chọn) mới gọi `select_profile()`. Khi đổi giọng trong lúc đang chạy, ứng dụng hỏi xác nhận, kiểm tra tệp giọng mới trước, và chỉ dừng phiên khi kiểm tra đạt.
 
-### 4.3. Bảng xử lý sự cố thường gặp (Troubleshooting FAQ)
-- **Sự cố 40 kHz với WASAPI**: Hướng dẫn chuyển sang Host API `[MME]` hoặc `[DirectSound]` nếu Windows từ chối tần số mẫu 40.000 Hz.
-- **Tiếng rè hoặc giật cục**: Kiểm tra chỉ số RTF trên Dashboard. Nếu RTF > 1.0, giảm `index_rate` hoặc chuyển sang chế độ hiệu năng cao.
-- **Không nghe thấy tiếng**: Kiểm tra đảm bảo không chọn thiết bị Output trùng với Micro hoặc CABLE Output.
+   Lỗi của thao tác nạp/start/stop và lỗi luồng hiển thị **ngay trong thẻ** (thông báo, gợi ý, "Xem chi tiết kỹ thuật"; lỗi thiết bị có thêm nút "Kiểm tra thiết bị âm thanh"), không bằng hộp thoại. Lỗi được xóa khi người dùng bắt đầu thao tác kế tiếp.
+
+   Dòng hiệu năng ngắn ("ổn định" / "sát giới hạn" / "có gián đoạn") chỉ hiện khi số liệu là **trực tiếp** và đã có ít nhất một chunk; ngưỡng RTF trùng với trang Nâng cao.
+
+   Cuối thẻ là **tóm tắt lộ trình** `🎙 micro → 🔊 ngõ ra` lấy từ thiết bị thực sự đang chọn, kèm giải thích: ngõ ra là cáp ảo → ứng dụng khác chọn micro là đầu thu của cáp (VB-Cable: "CABLE Output"); ngõ ra là loa/tai nghe → chỉ để nghe thử. Thiết bị đã lưu nhưng đang rút được cảnh báo ở đây. Liên kết "Đổi thiết bị →".
+3. **Tinh chỉnh giọng** (thu gọn mặc định, tóm tắt "Cao độ … · Index …"): `TuningPanel` gồm Pitch (−24…+24), Index Rate, Filter Radius, Protect, nút "Mặc định". Việc lưu tinh chỉnh vào `gui_settings.json` giữ nguyên như trước (ghi nhưng chưa khôi phục khi mở lại).
+4. **Khử tiếng ồn micro** (thu gọn mặc định, tóm tắt "Đang tắt" / "Bật · Vừa (áp dụng khi chạy)" / "Đang lọc · …" / "Đã tự ngắt"): `NoiseSuppressionPanel`, mặc định TẮT theo backend.
+
+### 4.2. Thư viện giọng (`library`)
+- Ô tìm kiếm (tên, mô tả ngắn, id, mô tả registry, ngôn ngữ), nút xóa, các chip lọc: Tất cả, Dùng được, Thử nghiệm, Dự kiến, Không khả dụng, Tiếng Việt, Tiếng Anh; dòng đếm "Hiển thị X / Y giọng".
+- Thẻ giọng: avatar monogram, tên, ngôn ngữ, mô tả ngắn, câu về khả năng sử dụng, nhãn trạng thái (đã thu hồi / chưa có mô hình / thiếu tệp / thử nghiệm / bản mẫu / đã duyệt / đang dùng — mỗi loại một màu), "Chi tiết" (thông số từ `ProfileSummary`, quyền dữ liệu, ghi chú registry).
+- Nút "Dùng trong Studio" chỉ có ở giọng `selectable`; nó **chọn** giọng và chuyển sang Studio, không nạp. Giọng đã thu hồi/chưa có mô hình/thiếu tệp không có nút.
+- **Bộ sưu tập VALORANT — dự kiến** (thu gọn, tự mở khi tìm kiếm): 29 nhân vật theo trang chính thức `https://playvalorant.com/en-us/agents/` (kiểm tra ngày 2026-10-23; nhân vật được bên thứ ba báo trước cho 2026-10-27 chưa được thêm). Dữ liệu ở `gui/assets/character_catalog.json`, chỉ để trình bày, avatar là monogram theo màu vai trò, không có hình ảnh của Riot. Nhân vật chưa liên kết hiển thị "Chưa có preset giọng" và không có nút. Liên kết `linked_profile_id` chỉ được chấp nhận khi trùng một hồ sơ đã đăng ký; liên kết sai bị từ chối và ghi log. Hiện chỉ Jett và Sage có liên kết (tới hồ sơ `jett`, `sage` trong registry). Kèm tuyên bố không liên kết với Riot Games.
+
+### 4.3. Âm thanh & Kết nối (`audio_settings`)
+- Chọn micro và ngõ ra (nơi duy nhất trong ứng dụng), "Làm mới danh sách", khóa khi đang chạy.
+- Lưu thiết bị (`gui_settings.json`, theo tên + host API) **chỉ khi người dùng tự chọn**, và chỉ lưu phía vừa đổi. Tải/làm mới danh sách không bao giờ lưu: thiết bị đã lưu nhưng đang rút được thay tạm bằng thiết bị mặc định cho phiên này kèm cảnh báo; cắm lại rồi "Làm mới" sẽ chọn lại.
+- Thẻ lộ trình và lưu ý không chọn loa ngoài làm ngõ ra khi dùng micro (tránh vòng hồi tiếp).
+- Các mục hướng dẫn thu gọn: cáp âm thanh ảo (không đóng gói VB-Cable), Discord, OBS, game có voice chat (chọn micro là đầu thu của cáp trong cài đặt âm thanh của game; **không** có tích hợp trực tiếp với game nào), khắc phục sự cố (WASAPI từ chối 40 kHz, giật khi RTF cao, nghe lại).
+
+### 4.4. Nâng cao / Khắc phục sự cố (`diagnostics`)
+- **Hiệu năng**: RTF, suy luận trung bình/chunk, độ trễ phần mềm ước tính, buffer phát hiện tại, chunk thành công/rơi, underflow. Nhãn nguồn: "Trực tiếp · phiên #N" hoặc "Phiên trước (#N) · đã kết thúc, không còn cập nhật". Giá trị trung bình trước chunk đầu tiên và buffer sau khi dừng hiển thị "--". Ghi chú: độ trễ phần mềm không gồm độ trễ driver/thiết bị.
+- **Thông số luồng**: đọc từ `AudioSettings` của phiên đang chạy (hoặc mặc định cho phiên tiếp theo): độ dài chunk, bộ đệm khởi động, hàng đợi tối đa, ngữ cảnh, crossfade, tìm SOLA; thuật toán F0 từ cấu hình hiện tại; độ trễ ghép chunk + khử ồn từ `algorithmic_delay_ms` của metrics.
+- **Lỗi gần nhất** (mã, phân loại, gợi ý, chi tiết kỹ thuật).
+- **File log**: đường dẫn, "Sao chép đường dẫn", "Mở thư mục log".
 
 ---
 
-## 5. Kiến trúc Đa luồng & An toàn Luồng (Threading Architecture)
+## 5. Đa luồng
 
-- **Không chặn GUI Thread**: Mọi tác vụ tốn thời gian như nạp model (`select_profile`), khởi tạo audio stream (`start`), dừng pipeline (`stop`) và giải phóng tài nguyên (`shutdown`) đều được thực thi trên worker thread nền (`threading.Thread`).
-- **Đồng bộ hàng đợi an toàn (Queue Marshaling)**: Dữ liệu trạng thái và lỗi được gửi về Tkinter main thread qua `queue.Queue` và xử lý thông qua `root.after()`.
-- **Dọn dẹp tài nguyên triệt để**: Bắt sự kiện `WM_DELETE_WINDOW` để gọi `service.shutdown()`, đóng PortAudio streams và giải phóng VRAM GPU trước khi đóng tiến trình.
+- Nạp giọng, start, stop và shutdown chạy trên thread nền; kết quả và lỗi được đưa về thread Tk qua `queue.Queue` + `root.after(40, …)`.
+- Trạng thái và metrics được thăm dò ~3,3 Hz; GUI chỉ coi một giọng là "đã nạp" khi `EngineStatus.model_loaded` và `profile_id` khớp (không dùng `ProfileSummary.is_active`).
+- Đóng cửa sổ gọi `service.shutdown()` trên thread nền rồi mới hủy cửa sổ.
 
 ---
 
-## 6. Kiểm định Chất lượng & Báo cáo Kiểm thử
+## 6. Kiểm thử
 
-Hệ thống được kiểm thử tự động toàn diện trong môi trường headless:
+Chạy headless, dịch vụ backend được mock (không GPU, không nạp mô hình, không thiết bị âm thanh, không mạng):
 
 ```powershell
-# Chạy kiểm thử đơn vị GUI
-.venv\Scripts\python -m unittest tests/unit/test_gui_app.py tests/unit/test_gui_settings.py
-
-# Chạy toàn bộ test suite dự án
-.venv\Scripts\python -m unittest discover -s tests
+.venv\Scripts\python -m unittest tests.unit.test_gui_app tests.unit.test_gui_views tests.unit.test_gui_dpi tests.unit.test_gui_settings tests.unit.test_gui_presentation
 ```
 
-- **Kết quả kiểm thử tự động**: Đạt **100% PASS** trên toàn bộ các bài kiểm thử unit/integration.
-- **Kiểm thử co giãn kích thước**: Đã xác nhận giao diện hiển thị ổn định, không phát sinh lỗi layout ở các độ phân giải `960x680`, `1080x760` và `1280x800`.
-- **Hạng mục kiểm thử thực địa cần làm với phần cứng thật**:
-  1. Kiểm tra micro và tai nghe vật lý đang cắm vào máy tính.
-  2. Kiểm tra cuộc gọi đàm thoại thực tế trên Discord thông qua VB-Cable.
+`test_gui_presentation` kiểm tra: bảng trạng thái → nút chính, giọng thu hồi/chưa có mô hình/thiếu tệp không bao giờ nạp được, câu chữ về kiểm tra tệp, danh mục 29 nhân vật và việc từ chối liên kết sai, nhân vật chưa liên kết không có nút, chỉ nhận ảnh cục bộ, logo/avatar dự phòng, lộ trình khớp thiết bị, Studio không có ô chọn thiết bị, số liệu trực tiếp và phiên trước, giới hạn chiều rộng cột Studio, và khởi động ứng dụng khi mọi kết nối mạng bị chặn.
+
+**Chưa kiểm tra** (cần làm trên máy thật):
+1. Xem trực quan bố cục mới ở 100/125/150% Windows thật.
+2. Micro và tai nghe vật lý; cuộc gọi Discord/OBS/game qua VB-Cable.
+3. Biểu tượng trên thanh tác vụ Windows.

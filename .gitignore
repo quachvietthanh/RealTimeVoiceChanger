@@ -69,6 +69,8 @@ models/indices/*
 .env.*
 config/*.local.json
 config/*.local.yaml
+# Timestamped registry backups written by profiles/registration.py
+config/*.bak-*
 
 # Local agent instructions
 CLAUDE.md

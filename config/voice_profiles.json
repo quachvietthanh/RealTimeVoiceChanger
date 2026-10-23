@@ -28,7 +28,8 @@
       "index_sha256": "798371f59f8719ea264c985329dc1c6d0755c7505da61f8143e5d2a04eba33e0",
       "defaults": {"pitch_shift": 12.0, "f0_method": "rmvpe", "index_rate": 0.5, "filter_radius": 2, "protect_rate": 0.4},
       "provenance": {"experiment": "nvf_short_v1", "checkpoint": "50e_5350s", "dataset": "data/dataset_train_peak0p88", "evaluation": "output/nvf_short_v1_audit_2026-10-21/README.md"},
-      "notes": "e50 is a temporary preview choice, not owner-approved. Pending owner listening."
+      "notes": "e50 is a temporary preview choice, not owner-approved. Pending owner listening.",
+      "withdrawn_reason": "Withdrawn 2026-10-22 at the owner's request: live use sounded unstable, with an echo/repeated-sound effect and choppy playback. Cause not yet identified (see docs/voice-profiles.md); files and hashes are kept for diagnostics and rollback."
     },
     {
       "id": "voice_b_preview",
@@ -36,13 +37,45 @@
       "description": "Speaker B, warm/soft female (English-leaning source). 25-epoch preview checkpoint spkb_preview_v2 epoch 25.",
       "status": "preview",
       "language": "vi",
-      "model_path": "third_party/applio/logs/spkb_preview_v2/spkb_preview_v2_25e_1975s.pth",
+      "model_path": "models/weights/spkb_preview_v2_25e_1975s.pth",
       "model_sha256": "06f6ec38e1d87336b012eb4a2b7edb0b8457e8e48391e6a08d732c36ec244532",
-      "index_path": "third_party/applio/logs/spkb_preview_v2/added_spkb_preview_v2_v2.index",
+      "index_path": "models/indices/added_spkb_preview_v2_v2.index",
       "index_sha256": "fbd308fe60329dcbf159641669e2210362ab8115ceabd13ca70e61dd9ab13f7f",
       "defaults": {"pitch_shift": 14.0, "f0_method": "rmvpe", "index_rate": 0.25, "filter_radius": 2, "protect_rate": 0.4},
-      "provenance": {"experiment": "spkb_preview_v2", "checkpoint": "25e_1975s", "dataset": "data/speaker_b/dataset_split_manifest.json", "evaluation": "output/spkb_preview_v2_2026-10-21/README.md"},
+      "provenance": {"experiment": "spkb_preview_v2", "checkpoint": "25e_1975s", "dataset": "data/speaker_b/dataset_split_manifest.json", "evaluation": "output/spkb_preview_v2_2026-10-21/README.md", "relocated_from": {"model_path": "third_party/applio/logs/spkb_preview_v2/spkb_preview_v2_25e_1975s.pth", "index_path": "third_party/applio/logs/spkb_preview_v2/added_spkb_preview_v2_v2.index"}},
       "notes": "Checkpoint e25 and settings p+14/index 0.25 are provisional technical defaults, not an owner choice. Output is ~9 dB quieter than voice A. Pending owner listening."
+    },
+    {
+      "id": "jett",
+      "display_name": "Jett",
+      "description": "VALORANT Jett (English). Third-party RVC v2 model 'Jett Valorant (RVC v2) 500 Epochs' by SecretRetriever. Local evaluation only.",
+      "status": "preview",
+      "language": "en",
+      "data_rights": "unverified",
+      "dataset": {"path": "data/speakers/jett", "candidate_source": "https://huggingface.co/datasets/NgThVinh/ValorantAgentVoiceLines (subset 'Jett')", "license": "none declared; game audio, rights not verified"},
+      "defaults": {"pitch_shift": 12.0, "f0_method": "rmvpe", "index_rate": 0.5, "filter_radius": 3, "protect_rate": 0.33},
+      "provenance": {"source": "third-party download", "model_page": "https://voice-models.com/model/1m4kd2zR2TO", "download": "https://huggingface.co/SecretRetriever/RVC2_Models/resolve/main/Jett500Epoch.zip", "repo_revision": "a6a839898536e32fc9b108852bbd77b7ec7b1363", "archive_sha256": "ebfee2e6bcd578efa72dd854e1a9ac504f7ccfe4514623cdba92fbb696860745", "archive_files": ["Jett500epoch.pth", "added_IVF589_Flat_nprobe_1_Jetttest_v2.index"], "creator": "SecretRetriever", "attribution": "'Jett Valorant (RVC v2) 500 Epochs' by SecretRetriever (huggingface.co/SecretRetriever/RVC2_Models)", "declared_license": "openrail (Hugging Face repo tag only; no license text or terms in the model card or model page)", "license_status": "LICENSE_UNVERIFIED", "checkpoint": "v2, f0, 40k, info '500epoch'; model page says trained with Crepe", "registered_on": "2026-10-22", "doc": "docs/voice-profiles.md"},
+      "notes": "Third-party model of a Riot Games character voice. LICENSE_UNVERIFIED: the uploader's 'openrail' tag does not establish rights to the character's voice, so local, private evaluation only; do not distribute, publish or use commercially. Defaults are untuned placeholders, not an owner choice. Output level is fixed by the model, independent of input level: ~-16 dBFS RMS on speech, ~13 dB louder than Voice B on the same input, no clipping; pending owner listening. The 'dataset' field records the earlier training plan; this model was not trained by this project.",
+      "model_path": "models/weights/jett_valorant_500e.pth",
+      "model_sha256": "83745f80f560c727367f7e172a35605fbb5ca2f50749953e4a847c0111062bc7",
+      "index_path": "models/indices/jett_valorant_500e.index",
+      "index_sha256": "d014f9dc0b5f4649ad84f5c9070a71b64b604738f234666d21cfa3587edfd8ed"
+    },
+    {
+      "id": "sage",
+      "display_name": "Sage",
+      "description": "VALORANT Sage (English). Third-party RVC v2 model 'Sage- VALORANT (EN) (RVC v2) 500 Epochs' by lafual. Local evaluation only.",
+      "status": "preview",
+      "language": "en",
+      "data_rights": "unverified",
+      "dataset": {"path": "data/speakers/sage", "candidate_source": "https://huggingface.co/datasets/NgThVinh/ValorantAgentVoiceLines (subset 'Sage')", "license": "none declared; game audio, rights not verified"},
+      "defaults": {"pitch_shift": 12.0, "f0_method": "rmvpe", "index_rate": 0.5, "filter_radius": 3, "protect_rate": 0.33},
+      "provenance": {"source": "third-party download", "model_page": "https://voice-models.com/model/1mqq9wQSusT", "download": "https://huggingface.co/lafual/Sage_VALORANT/resolve/main/Sage.zip", "repo_revision": "ff2819bd8d1a3c31f46522166d9b9ecbcd0d7dc5", "archive_sha256": "344d368032ce29057f3b3d0a357904e8548a759757cceddf38a844baf155a5a2", "archive_files": ["Sage.pth", "added_IVF582_Flat_nprobe_1_Sage_v2.index"], "creator": "lafual", "attribution": "'Sage- VALORANT (EN) (RVC v2) 500 Epochs' by lafual (huggingface.co/lafual/Sage_VALORANT); creator asks: 'Give credit as long as you can'", "declared_license": "openrail (Hugging Face repo tag only; no license text in the model card)", "license_status": "LICENSE_UNVERIFIED", "checkpoint": "v2, f0, 40k, info '500epoch'", "registered_on": "2026-10-22", "doc": "docs/voice-profiles.md"},
+      "notes": "Third-party model of a Riot Games character voice. LICENSE_UNVERIFIED: the uploader's 'openrail' tag does not establish rights to the character's voice, so local, private evaluation only; do not distribute, publish or use commercially. Defaults are untuned placeholders, not an owner choice. Output level is fixed by the model, independent of input level: ~-18 dBFS RMS on speech, ~11 dB louder than Voice B on the same input, no clipping; pending owner listening. The 'dataset' field records the earlier training plan; this model was not trained by this project.",
+      "model_path": "models/weights/sage_valorant_500e.pth",
+      "model_sha256": "ef95e555298bac728d637174ebe7263fc1b12e7f6ed60b66b411ad96883045d2",
+      "index_path": "models/indices/sage_valorant_500e.index",
+      "index_sha256": "35d408eea2a70e4f7e4f54bb4093f7c0fd9499246accdc7d6c076560e7d88db7"
     }
   ]
 }

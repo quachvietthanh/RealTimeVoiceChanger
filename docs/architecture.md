@@ -90,7 +90,8 @@ Defines the decoupled voice conversion boundaries:
 
 ### 2a. `src/voice_changer/profiles/`
 
-- **`registry.py`**: `VoiceProfile`, `ProfileRegistry`, `ProfileValidation`. Loads `config/voice_profiles.json`; each profile pins its model and index by SHA-256, so an index cannot be paired with another speaker's model. Validation never touches the GPU. See `docs/voice-profiles.md`.
+- **`registry.py`**: `VoiceProfile`, `ProfileRegistry`, `ProfileValidation`. Loads `config/voice_profiles.json`; each profile pins its model and index by SHA-256, so an index cannot be paired with another speaker's model. Validation never touches the GPU. A `planned` profile (e.g. `jett`, `sage`) is registered without a model and is never loadable; each profile records its training-data rights (`data_rights`). Validation also rejects files registered for an earlier profile and models trained with a non-ContentVec embedder.
+- **`registration.py`**: `register_model()` (CLI: `scripts/register_profile_model.py`) pins a new model/index for a planned profile, validates the result like `select_profile`, and rewrites only that entry (backup + atomic replace). See `docs/voice-profiles.md`.
 
 ### 2b. `src/voice_changer/service/`
 

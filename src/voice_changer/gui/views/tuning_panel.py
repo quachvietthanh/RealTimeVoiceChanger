@@ -18,13 +18,17 @@ class TuningPanel(ttk.Frame):
         parent: tk.Widget,
         on_config_changed: Callable[[dict[str, float | int]], None],
         on_reset_requested: Callable[[], None],
+        framed: bool = True,
     ) -> None:
         super().__init__(parent, style="Surface.TFrame")
         self.on_config_changed = on_config_changed
         self.on_reset_requested = on_reset_requested
+        # framed=False: no border or title, for use inside a section that already has both (Voice Studio).
+        self._framed = framed
 
         self._active_config: Optional[ConversionConfig] = None
         self._updating = False
+        self._debounce_timer: Optional[str] = None
 
         self._build_ui()
 
@@ -33,9 +37,9 @@ class TuningPanel(ttk.Frame):
             self,
             bg=Colors.BG_SURFACE,
             highlightbackground=Colors.BORDER,
-            highlightthickness=1,
+            highlightthickness=1 if self._framed else 0,
             padx=16,
-            pady=14,
+            pady=14 if self._framed else 4,
         )
         card.pack(fill="x", expand=True)
 
@@ -43,22 +47,29 @@ class TuningPanel(ttk.Frame):
         header_row = tk.Frame(card, bg=Colors.BG_SURFACE)
         header_row.pack(fill="x", pady=(0, 8))
 
-        lbl_title = tk.Label(
-            header_row,
-            text="Tinh chỉnh giọng (Voice Tuning)",
-            font=Fonts.SUBTITLE,
-            bg=Colors.BG_SURFACE,
-            fg=Colors.TEXT_PRIMARY,
-        )
-        lbl_title.pack(side="left")
-
         self.btn_reset = ttk.Button(
             header_row,
-            text="↩️ Mặc định",
+            text="Mặc định",
             style="Secondary.TButton",
             command=self.on_reset_requested,
         )
         self.btn_reset.pack(side="right")
+
+        lbl_title = tk.Label(
+            header_row,
+            text="Tinh chỉnh giọng (Tuning)" if self._framed else "Áp dụng cho giọng đang nạp.",
+            font=Fonts.SUBTITLE if self._framed else Fonts.CAPTION,
+            fg=Colors.TEXT_PRIMARY if self._framed else Colors.TEXT_MUTED,
+            bg=Colors.BG_SURFACE,
+            anchor="w",
+            justify="left",
+        )
+        lbl_title.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        # At the minimum window width the title ran into the reset button; wrap into the space beside it.
+        header_row.bind(
+            "<Configure>",
+            lambda e: lbl_title.config(wraplength=max(1, e.width - self.btn_reset.winfo_reqwidth() - 8)),
+        )
 
         # 1. Pitch Shift Slider (-24 to +24 semitones)
         self.val_pitch = tk.DoubleVar(value=12.0)
@@ -112,20 +123,22 @@ class TuningPanel(ttk.Frame):
         footer_row = tk.Frame(card, bg=Colors.BG_SURFACE)
         footer_row.pack(fill="x", pady=(6, 0))
 
-        tk.Label(
+        # Read from the active config (set_config), not assumed.
+        self.lbl_f0 = tk.Label(
             footer_row,
-            text="Thuật toán F0: RMVPE (Cố định theo chuẩn dự án)",
+            text="Thuật toán F0: --",
             font=Fonts.CAPTION,
             bg=Colors.BG_SURFACE,
             fg=Colors.TEXT_MUTED,
-        ).pack(side="left")
+        )
+        self.lbl_f0.pack(side="left")
 
     def _create_slider(
         self,
         parent: tk.Frame,
         title: str,
         subtext: str,
-        var: tk.Variable,
+        var: tk.DoubleVar | tk.IntVar,
         from_val: float,
         to_val: float,
         formatter: Callable[[float], str],
@@ -179,8 +192,17 @@ class TuningPanel(ttk.Frame):
                 val = var.get()
                 lbl_val.config(text=formatter(val))
 
+        def _schedule_key_apply() -> None:
+            if self._updating:
+                return
+            if self._debounce_timer is not None:
+                self.after_cancel(self._debounce_timer)
+            self._debounce_timer = self.after(150, self._apply_debounced)
+
         var.trace_add("write", on_change)
         scale.bind("<ButtonRelease-1>", lambda e: self._on_slider_released())
+        scale.bind("<KeyRelease>", lambda e: _schedule_key_apply())
+        scale.bind("<FocusOut>", lambda e: self._apply_immediate_if_pending())
 
         return scale, lbl_val
 
@@ -198,21 +220,36 @@ class TuningPanel(ttk.Frame):
             self.val_index.set(round(config.index_rate, 2))
             self.lbl_index_val.config(text=f"{config.index_rate:.2f}")
 
-            self.val_filter.set(int(config.filter_radius))
+            self.val_filter.set(config.filter_radius)
             self.lbl_filter_val.config(text=str(config.filter_radius))
 
             self.val_protect.set(round(config.protect_rate, 2))
             self.lbl_protect_val.config(text=f"{config.protect_rate:.2f}")
+
+            self.lbl_f0.config(text=f"Thuật toán F0: {config.f0_method.upper()}")
         finally:
             self._updating = False
 
+    def _apply_debounced(self) -> None:
+        self._debounce_timer = None
+        self._on_slider_released()
+
+    def _apply_immediate_if_pending(self) -> None:
+        if self._debounce_timer is not None:
+            self.after_cancel(self._debounce_timer)
+            self._debounce_timer = None
+            self._on_slider_released()
+
     def _on_slider_released(self) -> None:
+        if self._debounce_timer is not None:
+            self.after_cancel(self._debounce_timer)
+            self._debounce_timer = None
         if self._updating:
             return
         changes: dict[str, float | int] = {
             "pitch_shift": float(round(self.val_pitch.get())),
             "index_rate": float(round(self.val_index.get(), 2)),
-            "filter_radius": int(self.val_filter.get()),
+            "filter_radius": self.val_filter.get(),
             "protect_rate": float(round(self.val_protect.get(), 2)),
         }
         self.on_config_changed(changes)

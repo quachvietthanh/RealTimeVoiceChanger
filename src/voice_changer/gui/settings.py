@@ -92,6 +92,22 @@ class GuiSettings:
                     return dev.device_id
         return inventory.default_output_id
 
+    def missing_saved_input(self, inventory: DeviceInventory) -> Optional[str]:
+        """Name of the saved input device if it is not in `inventory` (unplugged), else None."""
+        if not (self.input_device_name and self.input_device_host_api):
+            return None
+        found = any(d.name == self.input_device_name and d.host_api == self.input_device_host_api
+                    for d in inventory.inputs)
+        return None if found else self.input_device_name
+
+    def missing_saved_output(self, inventory: DeviceInventory) -> Optional[str]:
+        """Name of the saved output device if it is not in `inventory` (unplugged), else None."""
+        if not (self.output_device_name and self.output_device_host_api):
+            return None
+        found = any(d.name == self.output_device_name and d.host_api == self.output_device_host_api
+                    for d in inventory.outputs)
+        return None if found else self.output_device_name
+
     def update_input(self, device: Optional[AudioDevice]) -> None:
         if device is not None:
             self.input_device_name = device.name

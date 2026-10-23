@@ -8,6 +8,13 @@ sequence to exercise profile switching and VRAM release.
 This measures the software pipeline only: inference time/RTF, queue wait, software turnaround and
 output buffering. It does not measure physical microphone-to-speaker latency.
 
+Buffer telemetry: the playback buffer rises by one chunk at each write and drains between writes, so a
+single instantaneous reading depends on when it is taken. Progress lines are sampled on an absolute
+1 s schedule (`progress_samples` in the JSON). `write_telemetry` has one row per output write: the
+buffer level just before and after it, input queue depth, cumulative underflow/overflow/drop counters,
+with the write index and time since the output stream started; compare buffer_before_ms over time to
+see real drift. Simulated clocks only: this says nothing about a real device's callback timing.
+
 Examples (repo root, inference venv):
     .venv\\Scripts\\python scripts/service_simulation.py --profiles voice_a_preview,voice_b_preview --seconds 30
     .venv\\Scripts\\python scripts/service_simulation.py --profiles vctk_p231 --seconds 300 --pitch 10 --json-output out.json
@@ -30,7 +37,12 @@ import numpy as np  # noqa: E402
 import soundfile as sf  # noqa: E402
 
 from voice_changer.audio.pipeline import RealTimeVoiceChangerPipeline  # noqa: E402
-from voice_changer.audio.simulated import SimulatedInputStream, SimulatedOutputStream  # noqa: E402
+from voice_changer.audio.simulated import (  # noqa: E402
+    SimulatedInputStream,
+    SimulatedOutputStream,
+    WriteTelemetry,
+    next_tick,
+)
 from voice_changer.service import STREAM_SAMPLE_RATE, AudioSettings, VoiceChangerService  # noqa: E402
 
 
@@ -66,7 +78,10 @@ def main() -> int:
                     help="join chunks end to end (context/crossfade/search 0), the behaviour before ChunkStitcher")
     ap.add_argument("--capture-dir", default=None, help="write each profile's streamed output WAV here (new files only)")
     ap.add_argument("--json-output", default=None)
+    ap.add_argument("--progress-period", type=float, default=1.0, help="seconds between progress samples")
     args = ap.parse_args()
+    if args.progress_period <= 0:
+        ap.error("--progress-period must be positive")
 
     x, sr = sf.read(args.input, dtype="float32", always_2d=True)
     x = librosa.resample(x.mean(axis=1), orig_sr=sr, target_sr=STREAM_SAMPLE_RATE)
@@ -80,10 +95,16 @@ def main() -> int:
 
     def pipeline_factory(**kw):
         inp = SimulatedInputStream(feed, sample_rate=STREAM_SAMPLE_RATE)
+        telemetry = WriteTelemetry()
         out = SimulatedOutputStream(sample_rate=STREAM_SAMPLE_RATE, channels=2, block_size=2048,
-                                    prebuffer_seconds=kw["prebuffer_duration_s"], capture=capture_dir is not None)
-        streams.update(inp=inp, out=out)
-        return RealTimeVoiceChangerPipeline(input_stream=inp, output_stream=out, **kw)
+                                    prebuffer_seconds=kw["prebuffer_duration_s"], capture=capture_dir is not None,
+                                    telemetry=telemetry)
+        pipeline = RealTimeVoiceChangerPipeline(input_stream=inp, output_stream=out, **kw)
+        # Diagnostics only: qsize() is approximate and _input_queue is internal to the pipeline.
+        telemetry.probe = lambda: {"queue_depth": pipeline._input_queue.qsize(),
+                                   "chunks_dropped": pipeline.metrics.total_chunks_dropped}
+        streams.update(inp=inp, out=out, telemetry=telemetry)
+        return pipeline
 
     svc = VoiceChangerService(pipeline_factory=pipeline_factory)
     transitions: list[str] = []
@@ -94,7 +115,7 @@ def main() -> int:
 
     for run_no, pid in enumerate(args.profiles.split(","), start=1):
         t_load = time.perf_counter()
-        svc.select_profile(pid)
+        svc.select_profile(pid, allow_withdrawn=True)  # diagnostics may measure withdrawn profiles
         load_s = time.perf_counter() - t_load
         overrides = {k: v for k, v in (("pitch_shift", args.pitch), ("index_rate", args.index_rate)) if v is not None}
         if overrides:
@@ -109,14 +130,21 @@ def main() -> int:
         svc.start(AudioSettings(chunk_duration_s=args.chunk, prebuffer_s=args.prebuffer, **seams))
         inp = streams["inp"]
         expected_chunks = n // int(args.chunk * STREAM_SAMPLE_RATE)
-        while not inp.finished.wait(1.0):
+        progress: list[dict] = []
+        t0 = time.perf_counter()
+        _, deadline = next_tick(t0, args.progress_period, t0)
+        while not inp.finished.wait(max(deadline - time.perf_counter(), 0.0)):
+            t_sample = time.perf_counter()
             st = svc.get_status()
             m = svc.get_metrics() or {}
-            print(f"  [{pid}] {st.state.value} converted={m.get('chunks_converted')}/{expected_chunks} "
+            progress.append({"t_s": round(t_sample - t0, 4), "late_ms": round((t_sample - deadline) * 1000.0, 2),
+                             "chunks_converted": m.get("chunks_converted"), "buffer_ms": m.get("current_buffer_ms")})
+            print(f"  [{pid}] {st.state.value} t={t_sample - t0:.1f}s converted={m.get('chunks_converted')}/{expected_chunks} "
                   f"buffer={m.get('current_buffer_ms')}ms steady_underflows={m.get('steady_underflows')}", end="\r", flush=True)
             if st.state.value == "error":
                 print(f"\nsession error: {st.last_error}")
                 break
+            _, deadline = next_tick(t0, args.progress_period, time.perf_counter())
         # let the last chunk finish inference and play out
         deadline = time.perf_counter() + 3.0
         while (svc.get_metrics() or {}).get("chunks_converted", 0) + (svc.get_metrics() or {}).get("chunks_dropped", 0) \
@@ -133,7 +161,9 @@ def main() -> int:
                "last_error": status.last_error.__dict__ if status.last_error else None,
                "vram_after_load": vram_loaded, "vram_end_of_run": vram_running, "metrics": metrics,
                # whole process (all threads, incl. the simulated devices' clock threads), in cores
-               "process_cpu_s": round(cpu_s, 1), "wall_s": round(wall_s, 1), "avg_cpu_cores": round(cpu_s / wall_s, 3)}
+               "process_cpu_s": round(cpu_s, 1), "wall_s": round(wall_s, 1), "avg_cpu_cores": round(cpu_s / wall_s, 3),
+               "progress_samples": progress, "write_telemetry_summary": streams["telemetry"].summary(),
+               "write_telemetry": list(streams["telemetry"].rows)}
         if capture_dir:
             out_wav = capture_dir / f"{run_no:02d}_stream_{pid}_{int(args.seconds)}s.wav"
             if out_wav.exists():
@@ -148,6 +178,7 @@ def main() -> int:
             "avg_buffer_occupancy_ms", "algorithmic_delay_ms", "estimated_software_latency_ms", "stitch_resets", "noise_suppression_enabled",
             "avg_noise_suppression_ms", "p95_noise_suppression_ms", "max_noise_suppression_ms",
             "noise_suppression_errors")}) + f" | cpu {run['avg_cpu_cores']} cores")
+        print(f"[{pid}] write telemetry {json.dumps(run['write_telemetry_summary'])}")
         print(f"[{pid}] VRAM after load {vram_loaded} | end of run {vram_running}")
 
     svc.shutdown()

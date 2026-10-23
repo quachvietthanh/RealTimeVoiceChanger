@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from typing import Any, Callable, Optional, Protocol
@@ -117,7 +118,14 @@ class DeviceInventory:
 
 @dataclass(frozen=True)
 class ProfileSummary:
-    """Cheap description of a registered profile (no hashing or model reads)."""
+    """Cheap description of a registered profile (no hashing or model reads).
+
+    readiness: "no_model" (status planned, nothing to load), "files_missing" (model/index declared but
+    not on this machine) or "files_present" (call validate_profile() to confirm it can be loaded).
+    setup_hint says what to do when readiness is not "files_present" (empty otherwise).
+    withdrawn_reason is non-empty only for a withdrawn profile, which list_profiles() returns only when
+    include_withdrawn=True.
+    """
 
     profile_id: str
     display_name: str
@@ -128,6 +136,18 @@ class ProfileSummary:
     files_present: bool
     is_active: bool
     notes: str
+    readiness: str = "files_present"
+    setup_hint: str = ""
+    data_rights: str = "unspecified"
+    withdrawn_reason: str = ""
+
+    @property
+    def selectable(self) -> bool:
+        """The backend's answer to "offer a load action?": files on disk, not planned, not withdrawn.
+
+        select_profile() can still refuse it (hash mismatch, incompatible files: validate_profile()).
+        """
+        return self.readiness == "files_present" and not self.withdrawn_reason
 
 
 @dataclass(frozen=True)
@@ -144,7 +164,8 @@ class EngineStatus:
 
 
 class _Converter(Protocol):
-    def load_model(self, model_path: str, index_path: Optional[str] = None) -> None: ...
+    def load_model(self, model_path: str, index_path: Optional[str] = None, *,
+                   model_sha256: Optional[str] = None, index_sha256: Optional[str] = None) -> None: ...
     def unload(self) -> None: ...
     def convert_chunk(self, audio_data: Any, config: Optional[ConversionConfig] = None,
                       input_sr: int = 40000, target_sr: Optional[int] = None) -> Any: ...
@@ -182,6 +203,7 @@ class VoiceChangerService:
         self._profile: Optional[VoiceProfile] = None
         self._converter: Optional[_Converter] = None
         self._config: Optional[ConversionConfig] = None
+        self._expected_inference_s: Optional[float] = None  # timed at load, for the default chunk length
         self._audio: Optional[AudioSettings] = None
         self._noise = NoiseSuppressionSettings()  # kept across sessions and profile switches
         self._pipeline: Optional[RealTimeVoiceChangerPipeline] = None
@@ -273,23 +295,56 @@ class VoiceChangerService:
         """The registry's default profile. Not loaded automatically."""
         return self._registry.default_profile_id
 
-    def list_profiles(self) -> list[ProfileSummary]:
+    @staticmethod
+    def _readiness(profile: VoiceProfile) -> tuple[bool, str, str]:
+        if profile.is_planned:
+            return False, "no_model", (
+                "No model yet. Prepare a dataset with verified usage rights, train it, then register the "
+                "model and index in config/voice_profiles.json (docs/voice-profiles.md).")
+        if not profile.files_present():
+            return False, "files_missing", (
+                "Model or index file not found on this machine. Copy the registered files to the paths "
+                "in config/voice_profiles.json.")
+        return True, "files_present", ""
+
+    def list_profiles(self, include_withdrawn: bool = False) -> list[ProfileSummary]:
+        """Registered profiles in registry order. Withdrawn profiles are left out unless include_withdrawn."""
         with self._state_lock:
             active = self._profile.profile_id if self._profile and self._converter else None
-        return [
-            ProfileSummary(
+        summaries = []
+        for p in self._registry.list_profiles():
+            if p.is_withdrawn and not include_withdrawn and p.profile_id != active:
+                continue
+            present, readiness, hint = self._readiness(p)
+            summaries.append(ProfileSummary(
                 profile_id=p.profile_id,
                 display_name=p.display_name,
                 description=p.description,
                 status=p.status,
                 language=p.language,
                 defaults=p.defaults,
-                files_present=p.model_path.is_file() and (p.index_path is None or p.index_path.is_file()),
+                files_present=present,
                 is_active=p.profile_id == active,
                 notes=p.notes,
-            )
-            for p in self._registry.list_profiles()
-        ]
+                readiness=readiness,
+                setup_hint=hint,
+                data_rights=p.data_rights,
+                withdrawn_reason=p.withdrawn_reason,
+            ))
+        return summaries
+
+    def resolve_profile_id(self, preferred: Optional[str]) -> Optional[str]:
+        """The profile a client should load at startup: `preferred` (e.g. the last one saved in GUI settings)
+        if it is still selectable, else the registry default if selectable, else None (load nothing).
+
+        Cheap (no hashing). A preferred id that was removed, withdrawn, planned or whose files are missing
+        never reaches select_profile(), so a stale saved setting cannot cause a startup error.
+        """
+        selectable = {p.profile_id for p in self.list_profiles() if p.selectable}
+        for candidate in (preferred, self.default_profile_id):
+            if candidate in selectable:
+                return candidate
+        return None
 
     def validate_profile(self, profile_id: str) -> ProfileValidation:
         """Full asset check (existence, SHA-256, checkpoint/index compatibility). CPU only; may take ~1 s."""
@@ -299,22 +354,37 @@ class VoiceChangerService:
             raise self._fail(ProfileError("unknown_profile", str(err).strip("'\""),
                                           hint="Use list_profiles() for valid ids.")) from None
 
-    def select_profile(self, profile_id: str) -> None:
+    def select_profile(self, profile_id: str, allow_withdrawn: bool = False) -> None:
         """Validate and load a profile's model and index; its defaults become the active config.
 
         Allowed in IDLE and READY (stop() first when streaming). If validation fails, the currently
         loaded profile stays loaded. If loading fails after the old model was released, the engine
-        is IDLE with no model loaded.
+        is IDLE with no model loaded. A withdrawn profile is refused unless allow_withdrawn=True
+        (diagnostic scripts only; the GUI never passes it).
 
         Raises:
             InvalidStateError: while streaming (RUNNING/ERROR). Concurrent lifecycle calls wait, not raise.
-            ProfileError: unknown profile, invalid assets, or load failure.
+            ProfileError: unknown profile, planned profile without a model ("profile_not_ready"),
+                withdrawn profile ("profile_withdrawn"), invalid assets, or load failure.
             BackendError: code "worker_busy" (see _drain_previous_worker).
         """
         with self._op_lock:
             self._require(EngineState.IDLE, EngineState.READY, action="select a voice profile")
             self._drain_previous_worker()
             validation = self.validate_profile(profile_id)
+            profile = self._registry.get(profile_id)
+            if profile.is_withdrawn and not allow_withdrawn:
+                raise self._fail(ProfileError(
+                    "profile_withdrawn",
+                    f"Voice profile '{profile.display_name}' has been withdrawn from normal use.",
+                    hint=f"{profile.withdrawn_reason} Choose another profile.",
+                ))
+            if profile.is_planned:
+                raise self._fail(ProfileError(
+                    "profile_not_ready",
+                    f"Voice profile '{profile.display_name}' has no model yet.",
+                    hint=self._readiness(profile)[2],
+                ))
             if not validation.ok:
                 raise self._fail(ProfileError(
                     "profile_invalid",
@@ -322,7 +392,7 @@ class VoiceChangerService:
                     hint="; ".join(validation.errors),
                     details=repr(validation),
                 ))
-            profile = self._registry.get(profile_id)
+            assert profile.model_path is not None  # validation.ok implies a model is registered
             previous_state = self._state
 
             old = self._converter
@@ -331,7 +401,10 @@ class VoiceChangerService:
                 old.unload()
             converter = self._converter_factory()
             try:
-                converter.load_model(str(profile.model_path), str(profile.index_path) if profile.index_path else None)
+                # The pins are re-checked on the bytes the converter actually deserializes: the
+                # validation above read the files separately, and they could change in between.
+                converter.load_model(str(profile.model_path), str(profile.index_path) if profile.index_path else None,
+                                     model_sha256=profile.model_sha256, index_sha256=profile.index_sha256)
                 # Warm-up: the first inference after a load is ~4x slower (CUDA/cuDNN initialisation).
                 # Done here, the delay never reaches a session, where it would leave a permanent
                 # ~0.6 s backlog in the playback buffer (measured 2026-10-21). The length must match the
@@ -340,6 +413,13 @@ class VoiceChangerService:
                 noise = np.random.default_rng(0).normal(0.0, 1e-3, int(STREAM_SAMPLE_RATE * warm_s)).astype(np.float32)
                 converter.convert_chunk(noise, config=profile.defaults, input_sr=STREAM_SAMPLE_RATE,
                                         target_sr=STREAM_SAMPLE_RATE)
+                # A second, timed call measures the steady conversion time. The pipeline compares a
+                # session's first chunk with it: the first chunk is still slow after the GPU idles
+                # (435-554 ms vs ~270 ms after an 8 s pause, measured 2026-10-22).
+                t0 = time.perf_counter()
+                converter.convert_chunk(noise, config=profile.defaults, input_sr=STREAM_SAMPLE_RATE,
+                                        target_sr=STREAM_SAMPLE_RATE)
+                expected_inference_s = time.perf_counter() - t0
             except Exception as err:
                 try:
                     converter.unload()
@@ -354,9 +434,11 @@ class VoiceChangerService:
                 logger.exception("model load failed for profile %s", profile_id)
                 self._set(EngineState.IDLE, error, profile=None, converter=None, config=None)
                 raise error from err
-            logger.info("Loaded voice profile %s (previous state %s)", profile_id, previous_state.value)
+            logger.info("Loaded voice profile %s (previous state %s); steady inference %.1f ms",
+                        profile_id, previous_state.value, expected_inference_s * 1000.0)
             self._set(EngineState.READY, profile=profile, converter=converter,
-                      config=replace(profile.defaults), last_metrics=None, health=())
+                      config=replace(profile.defaults), last_metrics=None, health=(),
+                      expected_inference_s=expected_inference_s)
 
     def unload_profile(self) -> None:
         """Release the loaded model and return GPU memory. READY -> IDLE; no-op in IDLE."""
@@ -526,6 +608,9 @@ class VoiceChangerService:
                     if device_problem else "",
                 ))
             assert self._converter is not None and self._config is not None
+            # The load-time timing is only valid for the input length it was measured with.
+            default_length = (audio.chunk_duration_s, audio.context_s) == (AudioSettings.chunk_duration_s,
+                                                                         AudioSettings.context_s)
             self._set(EngineState.STARTING)
             pipeline = self._pipeline_factory(
                 converter=self._converter,
@@ -540,6 +625,7 @@ class VoiceChangerService:
                 crossfade_duration_s=audio.crossfade_s,
                 sola_search_s=audio.sola_search_s,
                 noise_suppression=self._noise,
+                expected_inference_s=self._expected_inference_s if default_length else None,
             )
             try:
                 pipeline.start()

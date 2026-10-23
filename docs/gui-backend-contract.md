@@ -117,7 +117,26 @@ RUNNING --(failure detected by get_status)--> ERROR --stop--> STOPPING --> READY
 
 ### `ProfileSummary` (from `list_profiles()`)
 `profile_id`, `display_name`, `description`, `status`, `language` (`vi`/`en`, informational),
-`defaults: ConversionConfig`, `files_present: bool` (cheap existence check), `is_active: bool`, `notes`.
+`defaults: ConversionConfig`, `files_present: bool` (cheap existence check), `is_active: bool`, `notes`,
+`readiness: str`, `setup_hint: str`, `data_rights: str`, `withdrawn_reason: str`.
+
+`list_profiles()` omits withdrawn profiles (registry field `withdrawn_reason`; currently `voice_a_preview`)
+unless it is the loaded profile; `list_profiles(include_withdrawn=True)` returns them too, with a non-empty
+`withdrawn_reason`. The GUI should call the default form.
+
+- `selectable` (property, not a constructor field): `readiness == "files_present"` and not withdrawn. This is
+  the one rule for "offer a load action"; Voice Studio and Voice Library should both use it instead of
+  combining `status`/`readiness`/`files_present` themselves. `select_profile()` can still refuse a selectable
+  profile whose files fail the hash/compatibility check (`profile_invalid`).
+- `resolve_profile_id(preferred) -> str | None` (cheap, never raises): `preferred` if selectable, else the
+  registry default if selectable, else `None`. Call it at startup with the saved profile id and load the
+  result (load nothing for `None`). The GUI does this since 2026-10-22.
+
+- `readiness`: `no_model` (status `planned`: registered, nothing to load), `files_missing` (model/index
+  declared but not on this machine) or `files_present` (call `validate_profile()` to confirm it is loadable).
+  Show `setup_hint` when it is not `files_present`; disable "load" for `no_model`.
+- `data_rights`: `unspecified`, `unverified`, `owner_recorded`, `consented` or `licensed` (see
+  `docs/voice-profiles.md`). Informational; `unverified` also appears as a `validate_profile()` warning.
 
 ### `ProfileValidation` (from `validate_profile(id)`)
 `profile_id`, `ok: bool` (loadable), `errors: tuple[str]`, `warnings: tuple[str]`, `model_version`,
@@ -145,7 +164,7 @@ the list of problems without applying anything.
 | `input_device_id` | int \| None | None | id from `list_devices().inputs` | None = Windows default mic |
 | `output_device_id` | int \| None | None | id from `list_devices().outputs` | None = Windows default output; VB-Cable: "CABLE Input" |
 | `chunk_duration_s` | float | 0.5 | 0.25 … 2.0 | Only 0.5 s is verified (baseline). Smaller chunks may underflow |
-| `prebuffer_s` | float | 0.15 | 0.0 … 1.0 | Playback starts this long after the first converted chunk |
+| `prebuffer_s` | float | 0.15 | 0.0 … 1.0 | Playback starts this long after the first converted chunk; shortened by a late first chunk's lateness (see `prebuffer_credit_ms`) |
 | `max_queue_size` | int | 3 | 1 … 8 | Captured chunks waiting for inference (see overload policy) |
 | `context_s` | float | 0.2 | 0.0 … 1.0, ≥ `crossfade_s + sola_search_s` | Previous input each model call also sees |
 | `crossfade_s` | float | 0.05 | 0.0 … 0.2 | Overlap blended between consecutive chunks |
@@ -220,6 +239,9 @@ update continuously. After `stop()`, the final values of that session (`live=Fal
 | `avg_queue_wait_ms`, `median_…`, `p95_…`, `p99_…`, `max_queue_wait_ms` | time a chunk waited for the worker |
 | `avg_software_e2e_ms`, `median_…`, `p95_…`, `p99_…`, `max_software_e2e_ms` | first captured sample → converted chunk in the playback buffer (chunk window + queue + inference) |
 | `speech_onset_latency_ms` | software e2e of the first chunk (includes model warm-up) |
+| `startup_chunks` | list, first 5 converted chunks: `seq`, `queue_wait_ms`, `noise_suppression_ms` (None without a stage), `inference_ms`, `turnaround_ms`, `software_e2e_ms`, `buffer_before_write_ms`, `buffer_after_write_ms` (software timings only; also logged once per session) |
+| `expected_inference_ms` | steady conversion time measured at profile load (0 when not used, e.g. non-default chunk/context length) |
+| `prebuffer_credit_ms` | how much of the prebuffer wait was skipped because the first chunk was late (first-chunk processing − expected − 50 ms tolerance, capped at `prebuffer_s` − one 51.2 ms output block). 0 when the first chunk took longer than the earliest next chunk (460.8 ms at 0.5 s chunks / 2048-frame input blocks): the worker is then behind and the full prebuffer is kept. No audio is discarded; lateness above the credit stays in the session latency |
 | `current_buffer_ms` | converted audio waiting to be played, right now (swings by one chunk as chunks arrive and play) |
 | `avg_buffer_occupancy_ms`, `p95_…`, `max_buffer_occupancy_ms` | the same, sampled right after each write (so it **includes** the chunk just written) |
 | `algorithmic_delay_ms` | fixed delays inside the backend: chunk-seam crossfade (55 ms) + noise suppression stage (20 ms) = 75 ms with defaults |
@@ -263,6 +285,8 @@ All errors raised by the service derive from `BackendError` and carry:
 |---|---|---|---|
 | `InvalidStateError` (`state`) | `invalid_state` | method not allowed in the current state | unchanged |
 | `ProfileError` (`profile`) | `unknown_profile` | id not in the registry | unchanged |
+| | `profile_not_ready` | profile has status `planned` (no model yet; `hint` says what to do) | unchanged; the current model stays loaded |
+| | `profile_withdrawn` | profile withdrawn from normal use (`hint` gives the reason); only diagnostics pass `select_profile(id, allow_withdrawn=True)` | unchanged; the current model stays loaded |
 | | `profile_invalid` | file missing, SHA-256 mismatch, incompatible index (`hint` lists the problems) | unchanged; the current model stays loaded |
 | | `model_load_failed` | GPU load failed (e.g. out of memory) | `idle`, nothing loaded |
 | `ConfigurationError` (`configuration`) | `invalid_setting` | value out of range | unchanged |
@@ -285,10 +309,24 @@ Profiles are declared in `config/voice_profiles.json` (format: `docs/voice-profi
 | `profile_id` | Voice | `status` | Default settings |
 |---|---|---|---|
 | `vctk_p231` | English VCTK p231 prototype (registry default) | `prototype` | p+12, index 0.75, filter 3, protect 0.33 |
-| `voice_a_preview` | Speaker A, Northern Vietnamese (nvf_short_v1 e50) | `preview` | p+12, index 0.50, filter 2, protect 0.40 |
+| `voice_a_preview` | Speaker A, Northern Vietnamese (nvf_short_v1 e50); **withdrawn**, not in `list_profiles()` | `preview` | p+12, index 0.50, filter 2, protect 0.40 |
 | `voice_b_preview` | Speaker B, warm/soft (spkb_preview_v2 e25) | `preview` | p+14, index 0.25, filter 2, protect 0.40 |
+| `jett` | Jett (no model yet) | `planned` | placeholders: p+12, index 0.50, filter 3, protect 0.33 |
+| `sage` | Sage (no model yet) | `planned` | placeholders: p+12, index 0.50, filter 3, protect 0.33 |
 
-- `status` is the owner's quality verdict, not technical readiness: `preview` profiles load and run, but
+- `planned` profiles are listed so the user can see them, but `select_profile` refuses them
+  (`profile_not_ready`). Show them as "not ready" with `ProfileSummary.setup_hint`.
+  The GUI now does this (checked 2026-10-22: planned badge, load disabled). GUI follow-ups, not done here:
+  (1) the "can it be loaded" rule is re-derived from `status`/`readiness`/`files_present` in five places
+  (`profiles_panel.py` x2, `library_view.py` x2, `app.py`); `readiness == "files_present"` alone is the
+  backend's answer (`files_present` is equivalent, and a planned profile is always `no_model`).
+  Use `ProfileSummary.selectable` for that.
+- Switching while streaming: the GUI calls `validate_profile(id)` first and only then `stop()` →
+  `select_profile(id)`, so a profile with bad files never interrupts the running session (since 2026-10-22).
+  If the GUI is redesigned, keep that order.
+- `validate_profile()` also rejects a model trained with an embedder other than ContentVec and files already
+  registered for an earlier profile, and warns for non-40 kHz models (`docs/voice-profiles.md`, Validation).
+- For the other values, `status` is the owner's quality verdict, not technical readiness: `preview` profiles load and run, but
   the owner has not approved how they sound. Show it, e.g. as a "Preview" badge. Only the project owner
   changes a status to `approved`.
 - `default_profile_id` (`vctk_p231`) is not loaded automatically; the GUI decides when to call
@@ -301,7 +339,15 @@ Profiles are declared in `config/voice_profiles.json` (format: `docs/voice-profi
 - `select_profile`: measured 7.6 s for the first load in a process (CUDA initialisation, embedder) and
   2.2–2.4 s for later switches, including one warm-up inference. The warm-up keeps the slow first
   inference out of the session; without it, the startup backlog stayed in the playback buffer for the whole
-  session (+0.67 s latency, measured).
+  session (+0.67 s latency, measured). A second, timed warm-up call (~0.3 s more, measured since
+  2026-10-22) gives `expected_inference_ms`.
+- The first chunk of a session is still slower after the GPU has idled (435–594 ms vs ~270 ms after an
+  8 s pause, simulated devices, 2026-10-22). If the first chunk finishes before the next one can be ready
+  (< 460.8 ms), up to `prebuffer_s` − 51.2 ms of its lateness is absorbed by starting playback earlier
+  (`prebuffer_credit_ms`); later chunks no slower than the first then cannot underflow (deterministic
+  model, evenly spaced callbacks). A slower first chunk gets no credit: when the next chunks are also
+  slower than real time, only the full prebuffer prevents underflows (530 ms + 530 ms underflowed with the
+  credit, 2026-10-23). The rest of the lateness remains for the whole session.
 - After `start()`, the first converted audio is heard after about one chunk (0.5 s) + inference (~0.3 s with
   the 0.2 s context) + `prebuffer_s` (0.15 s) + the 75 ms fixed delay (seams 55 ms, noise stage 20 ms).
 - `startup_underflows` > 0 is normal (silence before the first chunk arrives).

@@ -45,6 +45,7 @@ class AudioOutputStream:
         self._shutdown_underflow_count = 0
         self._first_chunk_received = False
         self._first_chunk_time: Optional[float] = None
+        self._prebuffer_credit_s = 0.0
         self._playback_started = False
         self._is_stopping = False
         self._overflow_count = 0
@@ -98,6 +99,12 @@ class AudioOutputStream:
         return self._status_flag_count
 
     @property
+    def prebuffer_credit_s(self) -> float:
+        """Part of the startup prebuffer skipped this session (see apply_prebuffer_credit)."""
+        with self._lock:
+            return self._prebuffer_credit_s
+
+    @property
     def buffered_samples(self) -> int:
         with self._lock:
             return len(self._buffer)
@@ -145,7 +152,7 @@ class AudioOutputStream:
                         if self._first_chunk_time is not None
                         else 0.0
                     )
-                    if elapsed < self.prebuffer_seconds:
+                    if elapsed < self.prebuffer_seconds - self._prebuffer_credit_s:
                         outdata.fill(0.0)
                         self._startup_underflow_count += 1
                         self._underflow_count += 1
@@ -194,6 +201,7 @@ class AudioOutputStream:
             self._buffer = np.zeros((0, self.channels), dtype=np.float32)
             self._first_chunk_received = False
             self._first_chunk_time = None
+            self._prebuffer_credit_s = 0.0
             self._playback_started = False
             self._is_stopping = False
             self._underflow_count = 0
@@ -203,6 +211,25 @@ class AudioOutputStream:
             self._overflow_count = 0
             self._status_flag_count = 0
             self._steady_underflow_timestamps = []
+
+    def apply_prebuffer_credit(self, seconds: float) -> float:
+        """Shorten the startup prebuffer wait by `seconds`; only before the first chunk is written.
+
+        For a first chunk that arrives late: playback then starts as if it had arrived on time, so the
+        lateness is not added to the latency of the whole session. No audio is discarded. The credit is
+        clamped to [0, prebuffer_seconds - one callback block]: the callback takes whole blocks, so a
+        chunk is needed up to one block before its nominal play time, and without this reserve a next
+        chunk exactly as slow as the first one underflows.
+
+        Returns:
+            The credit applied in seconds (0.0 after the first chunk, or for a non-finite value).
+        """
+        with self._lock:
+            if self._first_chunk_received or not np.isfinite(seconds):
+                return 0.0
+            max_credit = max(self.prebuffer_seconds - self.block_size / self.sample_rate, 0.0)
+            self._prebuffer_credit_s = min(max(float(seconds), 0.0), max_credit)
+            return self._prebuffer_credit_s
 
     def write_chunk(self, audio_data: np.ndarray) -> None:
         """Enqueue converted audio samples (float32, 1D mono or 2D stereo)."""
@@ -225,7 +252,7 @@ class AudioOutputStream:
             if not self._first_chunk_received:
                 self._first_chunk_received = True
                 self._first_chunk_time = time.perf_counter()
-                if self.prebuffer_seconds <= 0.0:
+                if self.prebuffer_seconds - self._prebuffer_credit_s <= 0.0:
                     self._playback_started = True
             self._buffer = np.vstack([self._buffer, arr])
             if len(self._buffer) > self.max_buffer_samples:

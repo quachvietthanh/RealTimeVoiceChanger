@@ -6,6 +6,7 @@ Isolates Applio's RVC inference engine behind the VoiceConverter protocol.
 from __future__ import annotations
 
 import contextlib
+import io
 import shutil
 import sys
 import time
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from voice_changer.conversion.base import ConversionConfig, VoiceConverter
+from voice_changer.conversion.rvc.assets import read_verified_bytes
+from voice_changer.conversion.rvc.contentvec import load_contentvec
 
 # CPU threads for PyTorch and Faiss when inference runs on CUDA. The CPU-side work per chunk is small,
 # and with the default pools (torch: one thread per core, Faiss: OpenMP) the idle threads spin-wait between
@@ -32,6 +35,31 @@ def limit_cpu_threads(n: int) -> None:
         faiss.omp_set_num_threads(n)
     except ImportError:
         pass
+
+
+def _refuse_path_load(weight_root: Any) -> None:
+    """Replaces Applio's VoiceConverter.load_model on the adapter's instance.
+
+    Applio's version calls torch.load() without weights_only, which under PyTorch 2.5 unpickles
+    arbitrary objects (code execution from a crafted .pth). The adapter installs checkpoints it has
+    verified and loaded with weights_only=True instead; any other path into Applio's loader fails here.
+    """
+    raise RuntimeError(
+        f"refusing Applio's unrestricted torch.load of '{weight_root}'; load models through "
+        "RVCAdapter.load_model()"
+    )
+
+
+def _refuse_embedder_load(embedder_model: Any, embedder_model_custom: Any = None) -> None:
+    """Replaces Applio's VoiceConverter.load_hubert on the adapter's instance.
+
+    Applio's version downloads a missing ContentVec from an unpinned URL and loads the files without a
+    hash check. The adapter installs a verified embedder instead (RVCAdapter._install_verified_embedder).
+    """
+    raise RuntimeError(
+        f"refusing Applio's unverified embedder load of '{embedder_model}'; the adapter installs a "
+        "hash-verified ContentVec"
+    )
 
 
 class RVCAdapter(VoiceConverter):
@@ -114,9 +142,18 @@ class RVCAdapter(VoiceConverter):
             self._sync_auxiliary_assets()
             try:
                 with contextlib.chdir(self._applio_root):
+                    import importlib
+
                     from rvc.infer.infer import VoiceConverter as ApplioVoiceConverter
 
+                    from voice_changer.conversion.rvc.rmvpe import VerifiedRMVPE0Predictor
+
+                    # Applio's Pipeline builds its pitch predictor from this module-level name; the
+                    # replacement verifies rmvpe.pt's SHA-256 and loads it weights-only (see rmvpe.py).
+                    importlib.import_module("rvc.infer.pipeline").RMVPE0Predictor = VerifiedRMVPE0Predictor
                     self._applio_vc = ApplioVoiceConverter()
+                self._applio_vc.load_model = _refuse_path_load
+                self._applio_vc.load_hubert = _refuse_embedder_load
             except ImportError as err:
                 raise ImportError(
                     f"Failed to import Applio inference core: {err}. "
@@ -124,11 +161,34 @@ class RVCAdapter(VoiceConverter):
                 ) from err
         return self._applio_vc
 
-    def load_model(self, model_path: str, index_path: Optional[str] = None) -> None:
+    def _install_verified_embedder(self, vc: Any) -> None:
+        """Load ContentVec from hash-verified bytes and set it up as Applio's load_hubert() would."""
+        model = load_contentvec(self._applio_root / "rvc" / "models" / "embedders" / "contentvec")
+        model.to(vc.config.device)
+        model = model.half() if vc.config.is_half else model.float()
+        model.eval()
+        vc.hubert_model = model
+        vc.last_embedder_model = "contentvec"  # Applio's convert_audio() then keeps this embedder
+
+    def load_model(
+        self,
+        model_path: str,
+        index_path: Optional[str] = None,
+        *,
+        model_sha256: Optional[str] = None,
+        index_sha256: Optional[str] = None,
+    ) -> None:
         """Load RVC voice model weights (.pth) and optional Faiss feature index (.index).
+
+        Each file is read once; when a SHA-256 is given it is checked on exactly the bytes that are
+        then deserialized. The checkpoint is unpickled only with torch.load(weights_only=True).
 
         The adapter is marked unloaded first, so a failed load never leaves the previous model's
         state (path, index, model_info) reported as loaded.
+
+        Raises:
+            FileNotFoundError: A file is missing.
+            ValueError: A hash does not match, or the checkpoint is not a weights-only RVC checkpoint.
         """
         self._model_loaded = False
         model_file = Path(model_path)
@@ -143,8 +203,9 @@ class RVCAdapter(VoiceConverter):
         # Validate PyTorch checkpoint integrity
         import torch
 
+        model_bytes = read_verified_bytes(model_file, model_sha256, "RVC model")
         try:
-            cpt = torch.load(str(model_file.resolve()), map_location="cpu", weights_only=True)
+            cpt = torch.load(io.BytesIO(model_bytes), map_location="cpu", weights_only=True)
         except Exception as err:
             raise ValueError(f"Failed to load PyTorch checkpoint '{model_path}': {err}") from err
 
@@ -167,8 +228,10 @@ class RVCAdapter(VoiceConverter):
             if not idx_file.exists():
                 raise FileNotFoundError(f"RVC feature index file not found: {index_path}")
             resolved_index = str(idx_file.resolve())
+            index_bytes: Optional[bytes] = read_verified_bytes(idx_file, index_sha256, "RVC index")
         else:
             resolved_index = ""
+            index_bytes = None
 
         self._model_info = model_info
         self._index_path = resolved_index
@@ -186,18 +249,28 @@ class RVCAdapter(VoiceConverter):
                 "before loading the voice model. Refer to docs/model-setup.md."
             )
 
-        # Initialize Applio VoiceConverter and preload model checkpoint inside Applio directory
+        # Initialize Applio VoiceConverter and install the checkpoint read above. Applio's own get_vc()
+        # would re-read the file with an unrestricted torch.load (see _refuse_path_load).
         vc = self._ensure_applio_initialized()
         with contextlib.chdir(self._applio_root):
-            vc.get_vc(self._model_path, sid=0)
+            vc.cpt = cpt
+            vc.setup_network()
+            vc.setup_vc_instance()
+            from voice_changer.conversion.rvc.rmvpe import VerifiedRMVPE0Predictor
+
+            if not isinstance(getattr(vc.vc, "model_rmvpe", None), VerifiedRMVPE0Predictor):
+                raise RuntimeError("Applio's pitch predictor was not built by VerifiedRMVPE0Predictor; "
+                                   "refusing a model whose rmvpe.pt was loaded without verification")
+            vc.loaded_model = self._model_path  # convert_file() -> get_vc() then skips reloading
             if not vc.hubert_model:
-                vc.load_hubert("contentvec")
+                self._install_verified_embedder(vc)
 
         # Preload and cache Faiss feature index into RAM to eliminate disk reload overhead (~165 ms/chunk)
-        if self._index_path:
+        if index_bytes is not None:
             import faiss
+            import numpy as np
 
-            self._cached_index = faiss.read_index(self._index_path)
+            self._cached_index = faiss.deserialize_index(np.frombuffer(index_bytes, dtype=np.uint8))
             self._cached_big_npy = self._cached_index.reconstruct_n(0, self._cached_index.ntotal)
         else:
             self._cached_index = None
@@ -261,8 +334,7 @@ class RVCAdapter(VoiceConverter):
 
         # Ensure embedder is loaded
         if not vc.hubert_model:
-            with contextlib.chdir(self._applio_root):
-                vc.load_hubert("contentvec")
+            self._install_verified_embedder(vc)
 
         if self._cached_index is not None and cfg.index_rate > 0:
             index_input: Any = (self._cached_index, self._cached_big_npy)

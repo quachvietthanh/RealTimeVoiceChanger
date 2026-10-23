@@ -10,6 +10,17 @@ from voice_changer.audio.devices import AudioDevice
 from voice_changer.gui.theme import Colors, Fonts
 from voice_changer.service import DeviceInventory
 
+WASAPI_WARNING = "⚠️ WASAPI có thể từ chối 40 kHz. Khuyên chọn cổng [MME] hoặc [DirectSound]."
+
+
+def may_reject_40k(dev: AudioDevice) -> bool:
+    """True for host APIs that may refuse a 40 kHz stream.
+
+    PortAudio names them "Windows WASAPI" / "Windows WDM-KS", so match the API inside the name, not the whole name.
+    """
+    api = dev.host_api.upper()
+    return "WASAPI" in api or "WDM-KS" in api
+
 
 class DevicesPanel(ttk.Frame):
     """Clean, balanced panel for selecting input microphone and output playback devices."""
@@ -27,6 +38,8 @@ class DevicesPanel(ttk.Frame):
         self._inventory: Optional[DeviceInventory] = None
         self._selected_input: Optional[AudioDevice] = None
         self._selected_output: Optional[AudioDevice] = None
+        # Side the user changed in the event being reported ('input'/'output'); read by the app to save only that side.
+        self.last_user_change: Optional[str] = None
 
         self._build_ui()
 
@@ -45,22 +58,23 @@ class DevicesPanel(ttk.Frame):
         header_row = tk.Frame(card, bg=Colors.BG_SURFACE)
         header_row.pack(fill="x", pady=(0, 10))
 
-        lbl_title = tk.Label(
-            header_row,
-            text="Thiết bị âm thanh (Audio Endpoints)",
-            font=Fonts.SUBTITLE,
-            bg=Colors.BG_SURFACE,
-            fg=Colors.TEXT_PRIMARY,
-        )
-        lbl_title.pack(side="left")
-
         self.btn_refresh = ttk.Button(
             header_row,
-            text="🔄 Làm mới",
+            text="Làm mới",
             style="Secondary.TButton",
             command=self.on_refresh_requested,
         )
         self.btn_refresh.pack(side="right")
+
+        lbl_title = tk.Label(
+            header_row,
+            text="Thiết bị âm thanh (Audio)",
+            font=Fonts.SUBTITLE,
+            bg=Colors.BG_SURFACE,
+            fg=Colors.TEXT_PRIMARY,
+            anchor="w",
+        )
+        lbl_title.pack(side="left", fill="x", expand=True)
 
         # 1. Microphone Input Section
         lbl_in = tk.Label(
@@ -83,6 +97,7 @@ class DevicesPanel(ttk.Frame):
             bg=Colors.BG_SURFACE,
             fg=Colors.TEXT_MUTED,
             anchor="w",
+            justify="left",
         )
         self.lbl_input_hint.pack(fill="x", pady=(0, 8))
 
@@ -111,11 +126,13 @@ class DevicesPanel(ttk.Frame):
         )
         self.lbl_output_hint.pack(fill="x", pady=(0, 4))
 
-        # Responsive label wrapping
-        card.bind(
-            "<Configure>",
-            lambda e: self.lbl_output_hint.config(wraplength=max(200, e.width - 32)),
-        )
+        # Responsive label wrapping (both hints: the WASAPI warning does not fit a half-width column on one line)
+        def _wrap_hints(e: tk.Event) -> None:
+            wrap = max(200, e.width - 32)
+            self.lbl_input_hint.config(wraplength=wrap)
+            self.lbl_output_hint.config(wraplength=wrap)
+
+        card.bind("<Configure>", _wrap_hints)
 
     def set_inventory(
         self,
@@ -163,7 +180,32 @@ class DevicesPanel(ttk.Frame):
             self._selected_output = inventory.outputs[target_out_idx]
             self._update_output_hint(self._selected_output)
 
-        self._notify_changed()
+        # No _notify_changed() here: loading an inventory is not a user choice, and on_devices_changed saves the
+        # selection as the user's preference (a fallback for an unplugged saved device would overwrite it).
+
+    def show_saved_device_unavailable(self, input_name: Optional[str], output_name: Optional[str]) -> None:
+        """Explain that a saved device is unplugged and the current selection is only for this session.
+
+        A side passed as None gets its normal hint back, so a notice that no longer applies is cleared.
+        """
+        if self._selected_input:
+            self._update_input_hint(self._selected_input)
+        if self._selected_output:
+            self._update_output_hint(self._selected_output)
+        if input_name:
+            self.lbl_input_hint.config(
+                text=f"⚠️ Thiết bị đã lưu '{input_name}' không khả dụng; tạm dùng thiết bị trên cho phiên này. "
+                     "Cắm lại rồi nhấn 'Làm mới' để khôi phục.",
+                fg=Colors.WARNING_TEXT,
+                wraplength=self.lbl_output_hint.cget("wraplength") or 300,
+                justify="left",
+            )
+        if output_name:
+            self.lbl_output_hint.config(
+                text=f"⚠️ Thiết bị đã lưu '{output_name}' không khả dụng; tạm dùng thiết bị trên cho phiên này. "
+                     "Cắm lại rồi nhấn 'Làm mới' để khôi phục.",
+                fg=Colors.WARNING_TEXT,
+            )
 
     def _on_input_selected(self, event: tk.Event) -> None:
         if not self._inventory:
@@ -172,6 +214,7 @@ class DevicesPanel(ttk.Frame):
         if 0 <= idx < len(self._inventory.inputs):
             self._selected_input = self._inventory.inputs[idx]
             self._update_input_hint(self._selected_input)
+            self.last_user_change = "input"
             self._notify_changed()
 
     def _on_output_selected(self, event: tk.Event) -> None:
@@ -181,14 +224,12 @@ class DevicesPanel(ttk.Frame):
         if 0 <= idx < len(self._inventory.outputs):
             self._selected_output = self._inventory.outputs[idx]
             self._update_output_hint(self._selected_output)
+            self.last_user_change = "output"
             self._notify_changed()
 
     def _update_input_hint(self, dev: AudioDevice) -> None:
-        if dev.host_api.upper() in ("WASAPI", "WDM-KS"):
-            self.lbl_input_hint.config(
-                text="⚠️ WASAPI có thể từ chối 40 kHz. Khuyên chọn cổng [MME] hoặc [DirectSound].",
-                fg=Colors.WARNING_TEXT,
-            )
+        if may_reject_40k(dev):
+            self.lbl_input_hint.config(text=WASAPI_WARNING, fg=Colors.WARNING_TEXT)
         else:
             self.lbl_input_hint.config(
                 text=f"✓ Cổng {dev.host_api} hỗ trợ 40 kHz | Kênh: {dev.max_input_channels}",
@@ -198,14 +239,11 @@ class DevicesPanel(ttk.Frame):
     def _update_output_hint(self, dev: AudioDevice) -> None:
         if dev.is_virtual_cable:
             self.lbl_output_hint.config(
-                text="⭐ Đã chọn Cáp ảo VB-Cable. Giọng chuyển đổi sẽ truyền trực tiếp vào Discord/OBS.",
+                text="⭐ Đã chọn cáp âm thanh ảo. Ứng dụng khác nhận giọng khi chọn micro 'CABLE Output'.",
                 fg=Colors.SUCCESS_TEXT,
             )
-        elif dev.host_api.upper() in ("WASAPI", "WDM-KS"):
-            self.lbl_output_hint.config(
-                text="⚠️ WASAPI có thể từ chối 40 kHz. Khuyên chọn cổng [MME] hoặc [DirectSound].",
-                fg=Colors.WARNING_TEXT,
-            )
+        elif may_reject_40k(dev):
+            self.lbl_output_hint.config(text=WASAPI_WARNING, fg=Colors.WARNING_TEXT)
         else:
             self.lbl_output_hint.config(
                 text="ℹ️ Phát ra loa/tai nghe để nghe thử. Để truyền vào Discord, hãy chọn 'CABLE Input'.",

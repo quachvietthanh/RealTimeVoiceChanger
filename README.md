@@ -77,8 +77,8 @@ python -m venv .venv
 # 2. Install PyTorch 2.5.1 with CUDA 12.1 support
 pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 
-# 3. Install core project dependencies in editable mode
-pip install -e .
+# 3. Install core project dependencies in editable mode, pinned to the verified environment
+pip install -c requirements/inference-win-py311-cu121.txt --extra-index-url https://download.pytorch.org/whl/cu121 -e .
 
 # 4. Apply Applio streaming low-latency patch
 python scripts/setup_applio_patch.py --apply
@@ -95,12 +95,18 @@ Ensure auxiliary assets (`rmvpe.pt`, `contentvec/pytorch_model.bin`, `contentvec
 # Download required checkpoints (RMVPE & ContentVec)
 python scripts/download_auxiliary_assets.py
 
-# Download base pretrained models for training (v2 40k f0G/f0D)
+# Download base pretrained models for training (v2 40k f0G/f0D); training only, not needed to run the app
 python scripts/download_pretraineds.py
 
 # List and verify audio devices
 python scripts/list_audio_devices.py
+
+# Check the installation: packages, Applio patch, model files, profiles, GUI assets (no GPU, audio or model load)
+python src/voice_changer/main.py --preflight --verify-hashes
 ```
+
+Release gates, packaging layout and the acceptance procedures that need real hardware are in
+[docs/release-acceptance.md](docs/release-acceptance.md).
 
 ### 3. Run Offline Conversion Test
 

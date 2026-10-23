@@ -115,6 +115,10 @@ A dedicated verification script is provided in the repository:
 
 This script downloads to `.tmp` files, verifies SHA-256 and PyTorch architecture compatibility before committing files to their final destinations, and automatically syncs them to Applio's internal model directory.
 
+At runtime `rmvpe.pt` is loaded by `VerifiedRMVPE0Predictor` (`src/voice_changer/conversion/rvc/rmvpe.py`): the file is read once, its SHA-256 must equal the value in the table above, and those bytes are deserialized with `torch.load(weights_only=True)`. A different or unreadable file stops model loading with an error; there is no fallback to Applio's unrestricted loader. Replacing `rmvpe.pt` with another build therefore also requires updating `RMVPE_SHA256`.
+
+ContentVec is loaded the same way by `load_contentvec` (`src/voice_changer/conversion/rvc/contentvec.py`): `third_party/applio/rvc/models/embedders/contentvec/config.json` and `pytorch_model.bin` are each read once and must match the SHA-256 values in the table above; the weights are deserialized weights-only and the model is built from that in-memory state dict, so transformers never re-opens a file. Applio's own embedder loader (which downloads a missing file from an unpinned URL) is disabled on the adapter's Applio instance. A different file stops model loading with an error; updating ContentVec requires updating `CONTENTVEC_WEIGHTS_SHA256` / `CONTENTVEC_CONFIG_SHA256`.
+
 ### B. Female Voice Model (`.pth`)
 
 - Obtain a verified, licensed RVC v2 female voice model (e.g., from an authorized public HuggingFace repository or personal training run).

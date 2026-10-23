@@ -162,7 +162,7 @@ def main() -> int:
     svc = VoiceChangerService()
     try:
         for pid in args.profiles.split(","):
-            svc.select_profile(pid)
+            svc.select_profile(pid, allow_withdrawn=True)  # diagnostics may measure withdrawn profiles
             conv, cfg = svc._converter, replace(svc._config)  # offline harness: drive the loaded converter
             for (iname, sname), x in denoised.items():
                 stitcher = ChunkStitcher(CHUNK, int(0.2 * SR), int(0.05 * SR), int(0.01 * SR))

@@ -1,7 +1,9 @@
-"""Main entry point for RealTimeVoiceChanger CLI.
+"""Command-line entry point (`voice-changer`, or `python src/voice_changer/main.py`).
 
-NOTE: This is a project scaffold. The full real-time audio pipeline and RVC
-inference are scheduled for implementation in subsequent milestones.
+With no flags it launches the desktop GUI. `--check-env` prints the environment diagnostics,
+`--preflight` checks the installation (diagnostics/preflight.py) and `--cli` prints where to find the
+backend API; none of them starts audio or loads a model. Real-time conversion itself is
+driven through `voice_changer.service.VoiceChangerService` (docs/gui-backend-contract.md).
 """
 
 from __future__ import annotations
@@ -36,6 +38,16 @@ def parse_args() -> argparse.Namespace:
         help="Run environment and system diagnostic checks.",
     )
     parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Check dependencies, Applio, model files, profiles and GUI assets (no GPU, audio or model loading).",
+    )
+    parser.add_argument(
+        "--verify-hashes",
+        action="store_true",
+        help="With --preflight, also verify the SHA-256 of every model, index and auxiliary file.",
+    )
+    parser.add_argument(
         "--gui",
         action="store_true",
         help="Launch the desktop graphical user interface (default).",
@@ -54,6 +66,13 @@ def main() -> int:
     if args.check_env:
         run_environment_summary()
         return 0
+
+    if args.preflight:
+        from voice_changer.diagnostics.preflight import FAIL, format_report, run_preflight
+
+        checks = run_preflight(verify_hashes=args.verify_hashes)
+        print(format_report(checks))
+        return 1 if any(c.status == FAIL for c in checks) else 0
 
     if args.cli:
         print("=" * 60)

@@ -30,10 +30,13 @@ class NoiseSuppressionPanel(ttk.Frame):
         parent: tk.Widget,
         on_noise_changed: Callable[[Optional[bool], Optional[str]], None],
         on_rearm_requested: Optional[Callable[[], None]] = None,
+        framed: bool = True,
     ) -> None:
         super().__init__(parent, style="Surface.TFrame")
         self.on_noise_changed = on_noise_changed
         self.on_rearm_requested = on_rearm_requested
+        # framed=False: no border or title, for use inside a section that already has both (Voice Studio).
+        self._framed = framed
 
         self.var_enabled = tk.BooleanVar(value=False)
         self._current_mode = "medium"
@@ -46,24 +49,15 @@ class NoiseSuppressionPanel(ttk.Frame):
             self,
             bg=Colors.BG_SURFACE,
             highlightbackground=Colors.BORDER,
-            highlightthickness=1,
-            padx=14,
-            pady=10,
+            highlightthickness=1 if self._framed else 0,
+            padx=14 if self._framed else 16,
+            pady=10 if self._framed else 4,
         )
         card.pack(fill="x", expand=True)
 
         # 1. Header with Title, Status Pill, and Prominent Toggle Button
         header_row = tk.Frame(card, bg=Colors.BG_SURFACE)
         header_row.pack(fill="x", pady=(0, 6))
-
-        lbl_title = tk.Label(
-            header_row,
-            text="Khử tiếng ồn microphone",
-            font=Fonts.SUBTITLE,
-            bg=Colors.BG_SURFACE,
-            fg=Colors.TEXT_PRIMARY,
-        )
-        lbl_title.pack(side="left")
 
         # Right side actions: Status indicator + Quick Action Toggle Button
         header_right = tk.Frame(header_row, bg=Colors.BG_SURFACE)
@@ -82,7 +76,7 @@ class NoiseSuppressionPanel(ttk.Frame):
 
         self.btn_toggle = tk.Button(
             header_right,
-            text="⚪ TẮT (Bấm để Bật)",
+            text="⚪ TẮT",
             font=Fonts.CAPTION_BOLD,
             bg=Colors.BG_ELEVATED,
             fg=Colors.TEXT_MUTED,
@@ -90,12 +84,37 @@ class NoiseSuppressionPanel(ttk.Frame):
             activeforeground=Colors.TEXT_PRIMARY,
             borderwidth=1,
             relief="flat",
+            highlightthickness=2,
+            highlightbackground=Colors.BG_SURFACE,
+            highlightcolor=Colors.ACCENT_CYAN,
             padx=10,
             pady=3,
             cursor="hand2",
             command=self._on_toggle_button_clicked,
         )
         self.btn_toggle.pack(side="left")
+
+        def _focus_in_toggle(e: Optional[tk.Event] = None) -> None:
+            self.btn_toggle.config(highlightbackground=Colors.ACCENT_CYAN)
+
+        def _focus_out_toggle(e: Optional[tk.Event] = None) -> None:
+            self.btn_toggle.config(highlightbackground=Colors.BG_SURFACE)
+
+        self.btn_toggle._focus_in = _focus_in_toggle  # type: ignore[attr-defined]
+        self.btn_toggle._focus_out = _focus_out_toggle  # type: ignore[attr-defined]
+        self.btn_toggle.bind("<FocusIn>", _focus_in_toggle)
+        self.btn_toggle.bind("<FocusOut>", _focus_out_toggle)
+        self.btn_toggle.bind("<Return>", lambda e: (self.btn_toggle.invoke(), "break")[1])
+
+        lbl_title = tk.Label(
+            header_row,
+            text="Khử tiếng ồn microphone" if self._framed else "",
+            font=Fonts.SUBTITLE,
+            bg=Colors.BG_SURFACE,
+            fg=Colors.TEXT_PRIMARY,
+            anchor="w",
+        )
+        lbl_title.pack(side="left", fill="x", expand=True)
 
         # 2. Short functional explanation
         self.lbl_desc = tk.Label(
@@ -145,17 +164,32 @@ class NoiseSuppressionPanel(ttk.Frame):
 
         self.btn_rearm = tk.Button(
             self.frame_error,
-            text="🔄 Kích hoạt lại bộ lọc",
+            text="Kích hoạt lại bộ lọc",
             font=Fonts.CAPTION_BOLD,
             bg=Colors.DANGER,
             fg=Colors.TEXT_ON_PRIMARY,
             borderwidth=0,
+            highlightthickness=2,
+            highlightbackground=Colors.DANGER_BG,
+            highlightcolor=Colors.ACCENT_CYAN,
             padx=8,
             pady=3,
             cursor="hand2",
             command=self._on_rearm,
         )
         self.btn_rearm.pack(anchor="w", pady=(2, 0))
+
+        def _focus_in_rearm(e: Optional[tk.Event] = None) -> None:
+            self.btn_rearm.config(highlightbackground=Colors.ACCENT_CYAN)
+
+        def _focus_out_rearm(e: Optional[tk.Event] = None) -> None:
+            self.btn_rearm.config(highlightbackground=Colors.DANGER_BG)
+
+        self.btn_rearm._focus_in = _focus_in_rearm  # type: ignore[attr-defined]
+        self.btn_rearm._focus_out = _focus_out_rearm  # type: ignore[attr-defined]
+        self.btn_rearm.bind("<FocusIn>", _focus_in_rearm)
+        self.btn_rearm.bind("<FocusOut>", _focus_out_rearm)
+        self.btn_rearm.bind("<Return>", lambda e: (self.btn_rearm.invoke(), "break")[1])
 
         # 4. Controls: Checkbox and Mode Selector
         ctrl_frame = tk.Frame(card, bg=Colors.BG_SURFACE)
@@ -254,7 +288,7 @@ class NoiseSuppressionPanel(ttk.Frame):
             )
         else:
             self.btn_toggle.config(
-                text="⚪ TẮT (Bấm để Bật)",
+                text="⚪ TẮT",
                 bg=Colors.BG_ELEVATED,
                 fg=Colors.TEXT_MUTED,
                 activebackground=Colors.BG_HOVER,

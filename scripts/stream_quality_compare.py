@@ -146,7 +146,7 @@ def main() -> int:
     svc = VoiceChangerService()
     try:
         for pid, over in runs:
-            svc.select_profile(pid)
+            svc.select_profile(pid, allow_withdrawn=True)  # diagnostics may measure withdrawn profiles
             conv = svc._converter  # offline harness: drive the loaded converter directly
             cfg = replace(svc._config, **over) if over else svc._config
             tag = pid if over is None else f"{pid}__p{cfg.pitch_shift:+g}_ir{cfg.index_rate:g}_fr{cfg.filter_radius}_pr{cfg.protect_rate:g}"
